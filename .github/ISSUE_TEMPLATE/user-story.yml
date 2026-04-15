@@ -1,0 +1,88 @@
+name: User Story
+description: Create a standardized agile user story for the project backlog.
+title: "[User Story]: "
+labels: ["user-story"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to write a user story! Please fill in all required sections so the team can plan and estimate the work effectively.
+
+  - type: textarea
+    id: user-story
+    attributes:
+      label: "\U0001F3AF User Story"
+      description: "Describe the feature from the perspective of the end user."
+      placeholder: "As a **[role]**, I want to **[goal]**, so that **[benefit]**."
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: "\u2705 Acceptance Criteria"
+      description: "List the conditions that must be met for this story to be considered complete."
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition-of-done
+    attributes:
+      label: "\U0001F4D0 Definition of Done"
+      description: "What must be true before this story can be closed?"
+      placeholder: |
+        - [ ] Implementation is complete
+        - [ ] Review is complete
+        - [ ] Relevant validation is complete
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: "\U0001F4D8 Context / Notes"
+      description: "Any background information, constraints, or design notes relevant to this story."
+      placeholder: "Add any context needed for planning and implementation."
+    validations:
+      required: false
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: "\U0001F517 Dependencies"
+      description: "List related issues, blockers, or prerequisite work."
+      placeholder: "- Depends on #issue or external requirement"
+    validations:
+      required: false
+
+  - type: textarea
+    id: test-scenarios
+    attributes:
+      label: "\U0001F9EA Test Scenarios"
+      description: "Describe the key test scenarios using Given / When / Then format."
+      placeholder: |
+        - **Scenario:** Given ..., when ..., then ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: resources
+    attributes:
+      label: "\U0001F4CE Additional Resources"
+      description: "Link any documentation, mockups, or references."
+      placeholder: "- https://example.com"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: "\U0001F4CB Pre-submission Checklist"
+      options:
+        - label: "The story follows the **As a [role], I want [goal], so that [benefit]** format."
+          required: true
+        - label: "Acceptance criteria are specific and testable."
+          required: true
