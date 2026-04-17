@@ -1,6 +1,7 @@
 # Go build artifacts
 /manager
 /migrate
+/gen-api-key
 *.test
 *.out
 
