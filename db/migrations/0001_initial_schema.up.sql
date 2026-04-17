@@ -106,8 +106,8 @@ CREATE TABLE instances (
         )),
     -- Resource requests used for scheduling decisions.
     cpu_limit       INTEGER     NOT NULL DEFAULT 1 CHECK (cpu_limit > 0),
-    memory_limit    BIGINT      NOT NULL DEFAULT 536870912  CHECK (memory_limit > 0),  -- 512 MiB
-    disk_limit      BIGINT      NOT NULL DEFAULT 10737418240 CHECK (disk_limit > 0),   -- 10 GiB
+    memory_limit    BIGINT      NOT NULL DEFAULT 512 * 1024 * 1024   CHECK (memory_limit > 0),  -- 512 MiB
+    disk_limit      BIGINT      NOT NULL DEFAULT 10 * 1024 * 1024 * 1024 CHECK (disk_limit > 0), -- 10 GiB
     -- Arbitrary LXD instance configuration key/value pairs.
     config          JSONB       NOT NULL DEFAULT '{}',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
