@@ -45,6 +45,67 @@ The goal is simple:
 - License (Apache 2.0): [LICENSE](LICENSE)
 - Repository: [Mewtos7/lx-container-weaver](https://github.com/Mewtos7/lx-container-weaver)
 
+## Database Migrations
+
+Schema changes are managed with versioned SQL migration files stored under `db/migrations/`. A lightweight Go migration runner (in `internal/migration/`) applies them in order and tracks the applied state in a `schema_migrations` table.
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/) for the local PostgreSQL instance.
+- Go 1.25+ to build the `migrate` binary.
+
+### Quickstart — apply migrations on a fresh database
+
+```sh
+# 1. Start a local PostgreSQL container
+make db-up
+
+# 2. Apply all pending migrations
+make migrate-up
+```
+
+The first run creates the full schema (clusters, nodes, instances, placements, scaling actions, migrations, and audit events tables) as defined in `db/migrations/0001_initial_schema.up.sql`.
+
+### Check migration status
+
+```sh
+make migrate-status
+```
+
+This prints every applied migration version and the timestamp at which it was applied.
+
+### Roll back the latest migration
+
+```sh
+make migrate-down
+```
+
+Only the most recently applied migration is rolled back. Run the command multiple times to step further back.
+
+### Tear down the local database
+
+```sh
+# Stops the container and removes the volume (all data is lost)
+make db-down
+```
+
+### Custom database URL
+
+All migration targets read the `DATABASE_URL` environment variable. You can override the default local value:
+
+```sh
+DATABASE_URL=postgres://user:pass@myhost:5432/mydb?sslmode=require make migrate-up
+```
+
+### Migration file naming convention
+
+```
+db/migrations/<version>_<description>.up.sql   — forward migration
+db/migrations/<version>_<description>.down.sql — rollback
+```
+
+Where `<version>` is a zero-padded four-digit integer (e.g. `0001`, `0002`). Files are applied in ascending lexicographic order. Each migration runs inside a single database transaction; a failure causes the transaction to roll back and the error is surfaced immediately.
+
 ## Status
 
 This project is under active development and open to improvements, fixes, and feature contributions.
