@@ -9,10 +9,10 @@
 
 The core value of LX Container Weaver is its ability to automatically manage LXD node capacity in response to workload demand. This requires a well-defined strategy for:
 
-1. Deciding where to place a new container or VM (scheduling).
+1. Deciding where to place a new instance (container or VM) (scheduling).
 2. Detecting when capacity is insufficient and provisioning more (scale-out).
 3. Detecting when capacity is over-provisioned and consolidating workloads to free nodes (scale-in).
-4. Evicting containers/VMs from a node safely before decommissioning it.
+4. Evicting instances from a node safely before decommissioning it.
 
 ## Decision
 
@@ -20,7 +20,7 @@ The orchestrator runs a **continuous reconciliation loop** that periodically eva
 
 ### Placement (scheduling)
 
-New containers and VMs are placed using a **bin-packing strategy**: select the node with the highest current utilisation that still has sufficient headroom for the workload's requested CPU, memory, and disk. This minimises fragmentation and delays scale-out.
+New instances (containers and VMs) are placed using a **bin-packing strategy**: select the node with the highest current utilisation that still has sufficient headroom for the workload's requested CPU, memory, and disk. This minimises fragmentation and delays scale-out.
 
 ### Scale-out trigger
 
@@ -63,3 +63,9 @@ On trigger: live-migrate all workloads off the candidate node (ADR-007), remove 
 - The reconciliation loop must be observable: each iteration logs decisions and reasons, and metrics are exposed for dashboarding.
 - The loop must handle partial failures gracefully (e.g. a failed provisioning attempt should not block the next iteration).
 - The scheduling algorithm is encapsulated in a replaceable `Scheduler` interface to allow alternative strategies in the future.
+
+## Related ADRs
+
+- ADR-005 — Hyperscaler Integration Approach
+- ADR-007 — Live Migration Mechanism
+- ADR-008 — Multi-Cluster Management Model

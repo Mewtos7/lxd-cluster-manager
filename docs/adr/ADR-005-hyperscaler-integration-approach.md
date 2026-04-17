@@ -7,7 +7,7 @@
 
 ## Context
 
-The manager must provision and deprovision cloud servers (physical nodes) as part of its auto-scaling behaviour. The initial target hyperscaler is **Hetzner Cloud**, but the design must remain extensible to additional providers (e.g. AWS, DigitalOcean, OVH) without rewriting the orchestration logic.
+The manager must provision and deprovision cloud servers (future LXD nodes) as part of its auto-scaling behaviour. The initial target hyperscaler is **Hetzner Cloud**, but the design must remain extensible to additional providers (e.g. AWS, DigitalOcean, OVH) without rewriting the orchestration logic.
 
 Server provisioning must be idempotent, state-tracked, and recoverable in the event of a partial failure. Terraform is explicitly excluded as a dependency.
 
@@ -47,3 +47,9 @@ The Pulumi stack per-cluster manages the lifecycle of servers declared for that 
 - The `HyperscalerProvider` interface is defined in the manager codebase; the Hetzner implementation is the first concrete provider.
 - Adding a new hyperscaler requires implementing the provider interface and a corresponding Pulumi stack definition — no changes to orchestration logic.
 - Pulumi state backends (e.g. S3-compatible object store) must be configured and documented for production deployments.
+
+## Related ADRs
+
+- ADR-006 — Orchestration and Scheduling Strategy
+- ADR-008 — Multi-Cluster Management Model
+- ADR-009 — Implementation Language Choice

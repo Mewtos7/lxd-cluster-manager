@@ -7,14 +7,14 @@
 
 ## Context
 
-LX Container Weaver is designed to manage multiple independent LXD clusters from a single manager instance. Each cluster may have its own set of nodes, containers, VMs, and scaling configuration. The management model must ensure strict isolation between clusters while allowing unified visibility and control through the manager API.
+LX Container Weaver is designed to manage multiple independent LXD clusters from a single manager instance. Each cluster may have its own set of nodes, instances (containers and VMs), and scaling configuration. The management model must ensure strict isolation between clusters while allowing unified visibility and control through the manager API.
 
 ## Decision
 
 Each LXD cluster is represented as an **isolated management domain** within the manager:
 
 - Clusters are registered in the manager's database with their own identity, LXD API endpoint(s), credentials, hyperscaler configuration, and scaling policy.
-- All API resources (nodes, containers, VMs, scaling events) are scoped to a cluster by a `cluster_id` foreign key.
+- All API resources (nodes, instances, scaling events) are scoped to a cluster by a `cluster_id` foreign key.
 - The reconciliation loop (ADR-006) runs **independently per cluster** — a failure or scaling event in one cluster does not affect others.
 - Each cluster has its own Pulumi stack for hyperscaler provisioning (ADR-005).
 - Cross-cluster operations (e.g. moving a workload between clusters) are not supported in the initial version.
@@ -56,3 +56,9 @@ DELETE /v1/clusters/{cluster_id}
 - Cluster credentials (LXD API endpoint and TLS certificates) are stored securely in the database (encrypted at rest).
 - The manager's internal concurrency model must ensure that per-cluster reconciliation goroutines are isolated and observable.
 - Cross-cluster migration or federation can be addressed in a future ADR if the requirement emerges.
+
+## Related ADRs
+
+- ADR-005 — Hyperscaler Integration Approach
+- ADR-006 — Orchestration and Scheduling Strategy
+- ADR-007 — Live Migration Mechanism

@@ -40,3 +40,9 @@ The manager is implemented in **Go**.
 - The project structure follows standard Go conventions (`cmd/`, `internal/`, `pkg/`).
 - Contributors unfamiliar with Go are expected to follow the language conventions documented in `CONTRIBUTING.md`.
 - If a component with substantially different requirements emerges (e.g. a web dashboard), it may use a different language in a separate module — this ADR covers the manager service only.
+
+## Related ADRs
+
+- ADR-002 — API Design Style
+- ADR-005 — Hyperscaler Integration Approach
+- ADR-006 — Orchestration and Scheduling Strategy

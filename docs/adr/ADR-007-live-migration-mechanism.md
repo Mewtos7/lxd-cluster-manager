@@ -7,7 +7,7 @@
 
 ## Context
 
-Scale-in and workload consolidation (ADR-006) require moving running containers and VMs from one LXD node to another without stopping them. Live migration must be reliable, observable, and handle failure cases gracefully to avoid data loss or unplanned downtime.
+Scale-in and workload consolidation (ADR-006) require moving running instances (containers and VMs) from one LXD node to another without stopping them. Live migration must be reliable, observable, and handle failure cases gracefully to avoid data loss or unplanned downtime.
 
 ## Decision
 
@@ -42,3 +42,8 @@ The migration flow is:
 - The manager must track in-progress migrations to avoid scheduling decisions that conflict with an ongoing move.
 - Migration timeouts and retry policies are configurable.
 - If live migration fails on a node targeted for scale-in, that node is excluded from scale-in for the current reconciliation cycle and retried in a future cycle.
+
+## Related ADRs
+
+- ADR-006 — Orchestration and Scheduling Strategy
+- ADR-008 — Multi-Cluster Management Model
