@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/Mewtos7/lx-container-weaver/internal/api"
 	"github.com/Mewtos7/lx-container-weaver/internal/config"
@@ -124,6 +123,3 @@ func newLogger(levelStr string) *slog.Logger {
 	return slog.New(handler)
 }
 
-// startupDeadline is the time allowed for the service to reach a healthy
-// state before the process is considered unhealthy and exits.
-const startupDeadline = 10 * time.Second //nolint:unused
