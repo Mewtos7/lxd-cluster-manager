@@ -50,8 +50,6 @@ Significant architectural changes must be linked to an ADR. A new or updated ADR
 1. Check whether an existing ADR already covers the decision. If so, reference it (e.g., `ADR-003`) in the PR description.
 2. If no existing ADR applies, create a new one under `docs/adr/` using the template defined in `ADR-001` before or alongside the implementation.
 
-A CI check enforces this rule: PRs that touch architecture-impacting paths (source code, CI workflows) must either include a file under `docs/adr/` or reference an existing ADR in the PR title or description.
-
 See `docs/adr/ADR-001-adr-format-and-storage-convention.md` for the ADR template and naming convention.
 
 ## Issue templates
