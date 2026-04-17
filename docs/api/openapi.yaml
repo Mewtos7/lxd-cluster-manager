@@ -1,0 +1,1810 @@
+openapi: 3.1.0
+
+info:
+  title: LX Container Weaver API
+  version: "1"
+  description: |
+    Internal REST API for the LX Container Weaver manager.
+
+    Provides CRUD operations for clusters, nodes, and instances, as well as
+    control actions (start, stop, live migrate) on instances, manual scaling
+    triggers, and read-only access to audit events, scaling actions, and
+    migration records.
+
+    All endpoints are versioned under `/v1/`. Cluster-scoped resources
+    (nodes, instances, events, scaling actions, and migrations) are nested
+    under `/v1/clusters/{cluster_id}/`.
+
+    ## Authentication
+
+    Every request must include a valid API key as a bearer token:
+
+    ```
+    Authorization: Bearer <api-key>
+    ```
+
+    Requests without a valid key receive `401 Unauthorized`.
+
+servers:
+  - url: https://manager.example.internal/v1
+    description: Production manager
+
+tags:
+  - name: Clusters
+    description: Manage LXD clusters registered with the manager.
+  - name: Nodes
+    description: Manage nodes (servers) within a cluster.
+  - name: Instances
+    description: Manage containers and VMs within a cluster.
+  - name: Instance Control
+    description: Lifecycle control actions for individual instances.
+  - name: Scaling Actions
+    description: |
+      Scaling action records produced by the reconciliation loop, plus
+      manual trigger endpoints.
+  - name: Migrations
+    description: Live-migration records for instances moved between nodes.
+  - name: Events
+    description: Read-only audit event log scoped to a cluster.
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+security:
+  - BearerApiKey: []
+
+components:
+  securitySchemes:
+    BearerApiKey:
+      type: http
+      scheme: bearer
+      description: Static API key issued to each internal client.
+
+  # -------------------------------------------------------------------------
+  # Reusable parameters
+  # -------------------------------------------------------------------------
+  parameters:
+    ClusterId:
+      name: cluster_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique identifier of the cluster.
+
+    NodeId:
+      name: node_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique identifier of the node.
+
+    InstanceId:
+      name: instance_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique identifier of the instance.
+
+    ScalingActionId:
+      name: action_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique identifier of the scaling action.
+
+    MigrationId:
+      name: migration_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique identifier of the migration.
+
+    PageLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 50
+      description: Maximum number of items to return.
+
+    PageOffset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      description: Number of items to skip before returning results.
+
+  # -------------------------------------------------------------------------
+  # Schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # --- Shared primitives ---------------------------------------------------
+
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339 / ISO 8601 timestamp (UTC).
+      examples:
+        - "2026-04-17T12:00:00Z"
+
+    # --- Error ---------------------------------------------------------------
+
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code.
+          examples:
+            - not_found
+            - validation_error
+            - conflict
+        message:
+          type: string
+          description: Human-readable description of the error.
+        details:
+          type: object
+          description: Optional structured details (e.g. per-field validation errors).
+          additionalProperties: true
+
+    # --- Cluster -------------------------------------------------------------
+
+    ClusterStatus:
+      type: string
+      enum:
+        - active
+        - inactive
+        - error
+
+    ClusterBase:
+      type: object
+      required:
+        - name
+        - lxd_endpoint
+      properties:
+        name:
+          type: string
+          description: Unique human-readable name for the cluster.
+          examples:
+            - prod-eu-central
+        lxd_endpoint:
+          type: string
+          format: uri
+          description: Base URL of the LXD REST API for this cluster.
+          examples:
+            - https://lxd.prod-eu-central.example.internal:8443
+        hyperscaler_provider:
+          type: string
+          description: Hyperscaler provider used to provision nodes.
+          default: hetzner
+          examples:
+            - hetzner
+        hyperscaler_config:
+          type: object
+          description: |
+            Provider-specific configuration (API token reference, region,
+            server type, etc.). Structure varies by provider.
+          additionalProperties: true
+          default: {}
+        scaling_config:
+          type: object
+          description: |
+            Scaling thresholds and loop parameters:
+            `high_watermark`, `low_watermark`, `sustained_seconds`,
+            `cooldown_seconds`, `loop_interval_seconds`.
+          additionalProperties: true
+          default: {}
+
+    ClusterCreate:
+      allOf:
+        - $ref: "#/components/schemas/ClusterBase"
+        - type: object
+          properties:
+            lxd_tls_cert:
+              type: string
+              description: PEM-encoded TLS client certificate for the LXD API (write-only).
+            lxd_tls_key:
+              type: string
+              description: PEM-encoded TLS client key for the LXD API (write-only).
+            lxd_server_cert:
+              type: string
+              description: PEM-encoded TLS certificate of the LXD server (write-only).
+
+    ClusterUpdate:
+      type: object
+      description: |
+        Fields to update on the cluster. Only provided fields are changed;
+        omitted fields retain their current values.
+      properties:
+        name:
+          type: string
+        lxd_endpoint:
+          type: string
+          format: uri
+        lxd_tls_cert:
+          type: string
+          description: PEM-encoded TLS client certificate for the LXD API (write-only).
+        lxd_tls_key:
+          type: string
+          description: PEM-encoded TLS client key for the LXD API (write-only).
+        lxd_server_cert:
+          type: string
+          description: PEM-encoded TLS certificate of the LXD server (write-only).
+        hyperscaler_provider:
+          type: string
+        hyperscaler_config:
+          type: object
+          additionalProperties: true
+        scaling_config:
+          type: object
+          additionalProperties: true
+        status:
+          $ref: "#/components/schemas/ClusterStatus"
+
+    Cluster:
+      allOf:
+        - $ref: "#/components/schemas/ClusterBase"
+        - type: object
+          required:
+            - id
+            - status
+            - created_at
+            - updated_at
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Unique identifier of the cluster.
+            status:
+              $ref: "#/components/schemas/ClusterStatus"
+            created_at:
+              $ref: "#/components/schemas/Timestamp"
+            updated_at:
+              $ref: "#/components/schemas/Timestamp"
+
+    ClusterList:
+      type: object
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Cluster"
+        total:
+          type: integer
+          description: Total number of clusters matching the query (before pagination).
+
+    # --- Node ----------------------------------------------------------------
+
+    NodeStatus:
+      type: string
+      enum:
+        - provisioning
+        - online
+        - offline
+        - draining
+        - deprovisioning
+        - error
+
+    NodeBase:
+      type: object
+      required:
+        - name
+        - lxd_member_name
+        - cpu_cores
+        - memory_bytes
+        - disk_bytes
+      properties:
+        name:
+          type: string
+          description: Human-readable name for the node (unique within a cluster).
+          examples:
+            - node-01
+        lxd_member_name:
+          type: string
+          description: LXD cluster member name as registered in the LXD cluster.
+          examples:
+            - lxd-member-01
+        hyperscaler_server_id:
+          type: string
+          description: |
+            Server identifier on the hyperscaler (e.g. Hetzner server ID).
+            Used for deprovisioning. Omit for manually managed nodes.
+        cpu_cores:
+          type: integer
+          minimum: 1
+          description: Total CPU cores available on the node.
+        memory_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Total memory available on the node, in bytes.
+        disk_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Total disk capacity available on the node, in bytes.
+
+    NodeCreate:
+      allOf:
+        - $ref: "#/components/schemas/NodeBase"
+
+    NodeUpdate:
+      type: object
+      description: |
+        Fields to update on the node. Only provided fields are changed.
+      properties:
+        name:
+          type: string
+        lxd_member_name:
+          type: string
+        hyperscaler_server_id:
+          type: string
+        cpu_cores:
+          type: integer
+          minimum: 1
+        memory_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+        disk_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          $ref: "#/components/schemas/NodeStatus"
+
+    Node:
+      allOf:
+        - $ref: "#/components/schemas/NodeBase"
+        - type: object
+          required:
+            - id
+            - cluster_id
+            - status
+            - created_at
+            - updated_at
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Unique identifier of the node.
+            cluster_id:
+              type: string
+              format: uuid
+              description: Identifier of the cluster this node belongs to.
+            status:
+              $ref: "#/components/schemas/NodeStatus"
+            created_at:
+              $ref: "#/components/schemas/Timestamp"
+            updated_at:
+              $ref: "#/components/schemas/Timestamp"
+
+    NodeList:
+      type: object
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+        total:
+          type: integer
+
+    # --- Instance ------------------------------------------------------------
+
+    InstanceType:
+      type: string
+      enum:
+        - container
+        - vm
+
+    InstanceStatus:
+      type: string
+      enum:
+        - pending
+        - starting
+        - running
+        - stopping
+        - stopped
+        - migrating
+        - error
+        - deleted
+
+    InstanceBase:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Name of the instance (unique within a cluster).
+          examples:
+            - web-01
+        instance_type:
+          $ref: "#/components/schemas/InstanceType"
+          default: container
+        cpu_limit:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Number of vCPU cores to allocate to the instance.
+        memory_limit:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 536870912
+          description: Memory limit in bytes (default 512 MiB).
+        disk_limit:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 10737418240
+          description: Disk limit in bytes (default 10 GiB).
+        config:
+          type: object
+          description: Arbitrary LXD instance configuration key/value pairs.
+          additionalProperties: true
+          default: {}
+
+    InstanceCreate:
+      allOf:
+        - $ref: "#/components/schemas/InstanceBase"
+        - type: object
+          properties:
+            node_id:
+              type: string
+              format: uuid
+              description: |
+                Optional. Pin this instance to a specific node. If omitted,
+                the scheduler selects the best node automatically.
+
+    InstanceUpdate:
+      type: object
+      description: |
+        Fields to update on the instance. Only provided fields are changed.
+        `name`, `instance_type`, and `cluster_id` cannot be changed after
+        creation.
+      properties:
+        cpu_limit:
+          type: integer
+          minimum: 1
+        memory_limit:
+          type: integer
+          format: int64
+          minimum: 1
+        disk_limit:
+          type: integer
+          format: int64
+          minimum: 1
+        config:
+          type: object
+          additionalProperties: true
+
+    Instance:
+      allOf:
+        - $ref: "#/components/schemas/InstanceBase"
+        - type: object
+          required:
+            - id
+            - cluster_id
+            - status
+            - created_at
+            - updated_at
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Unique identifier of the instance.
+            cluster_id:
+              type: string
+              format: uuid
+              description: Identifier of the cluster this instance belongs to.
+            node_id:
+              type: string
+              format: uuid
+              nullable: true
+              description: |
+                Identifier of the node currently running this instance.
+                `null` while the instance is pending placement or has been deleted.
+            status:
+              $ref: "#/components/schemas/InstanceStatus"
+            created_at:
+              $ref: "#/components/schemas/Timestamp"
+            updated_at:
+              $ref: "#/components/schemas/Timestamp"
+
+    InstanceList:
+      type: object
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Instance"
+        total:
+          type: integer
+
+    # --- Instance control actions -------------------------------------------
+
+    MigrateInstanceRequest:
+      type: object
+      required:
+        - target_node_id
+      properties:
+        target_node_id:
+          type: string
+          format: uuid
+          description: Identifier of the destination node.
+
+    # --- Scaling Action ------------------------------------------------------
+
+    ScalingActionType:
+      type: string
+      enum:
+        - scale_out
+        - scale_in
+
+    ScalingActionStatus:
+      type: string
+      enum:
+        - pending
+        - in_progress
+        - completed
+        - failed
+        - aborted
+
+    ScalingActionTriggerRequest:
+      type: object
+      required:
+        - action_type
+        - trigger_reason
+      properties:
+        action_type:
+          $ref: "#/components/schemas/ScalingActionType"
+        trigger_reason:
+          type: string
+          description: Human-readable reason for triggering this action manually.
+          examples:
+            - Manual scale-out requested by operator
+
+    ScalingAction:
+      type: object
+      required:
+        - id
+        - cluster_id
+        - action_type
+        - trigger_reason
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        cluster_id:
+          type: string
+          format: uuid
+        action_type:
+          $ref: "#/components/schemas/ScalingActionType"
+        trigger_reason:
+          type: string
+        status:
+          $ref: "#/components/schemas/ScalingActionStatus"
+        node_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            For `scale_in`: the node being drained.
+            For `scale_out`: the newly provisioned node.
+            `null` while the action is still pending.
+        started_at:
+          $ref: "#/components/schemas/Timestamp"
+          nullable: true
+        completed_at:
+          $ref: "#/components/schemas/Timestamp"
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    ScalingActionList:
+      type: object
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScalingAction"
+        total:
+          type: integer
+
+    # --- Migration -----------------------------------------------------------
+
+    MigrationStatus:
+      type: string
+      enum:
+        - pending
+        - in_progress
+        - completed
+        - failed
+
+    Migration:
+      type: object
+      required:
+        - id
+        - instance_id
+        - source_node_id
+        - target_node_id
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        instance_id:
+          type: string
+          format: uuid
+        scaling_action_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The scaling action that triggered this migration, if any.
+        source_node_id:
+          type: string
+          format: uuid
+        target_node_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/MigrationStatus"
+        started_at:
+          $ref: "#/components/schemas/Timestamp"
+          nullable: true
+        completed_at:
+          $ref: "#/components/schemas/Timestamp"
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    MigrationList:
+      type: object
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Migration"
+        total:
+          type: integer
+
+    # --- Audit Event ---------------------------------------------------------
+
+    AuditEvent:
+      type: object
+      required:
+        - id
+        - resource_type
+        - action
+        - occurred_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Auto-incrementing event identifier.
+        cluster_id:
+          type: string
+          format: uuid
+          nullable: true
+        resource_type:
+          type: string
+          enum:
+            - cluster
+            - node
+            - instance
+            - scaling_action
+            - migration
+          description: Type of the resource affected by this event.
+        resource_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Identifier of the affected resource.
+        action:
+          type: string
+          description: Action performed (e.g. `create`, `update`, `delete`, `scale_out`, `scale_in`, `migrate`).
+          examples:
+            - create
+            - update
+            - delete
+            - scale_out
+            - scale_in
+            - migrate
+        actor:
+          type: string
+          nullable: true
+          description: API key label that performed the action, or `system` for reconciliation-loop actions.
+        details:
+          type: object
+          description: Structured event details (resource snapshot, diff, etc.).
+          additionalProperties: true
+        occurred_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    AuditEventList:
+      type: object
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+        total:
+          type: integer
+
+  # -------------------------------------------------------------------------
+  # Reusable responses
+  # -------------------------------------------------------------------------
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: unauthorized
+            message: "A valid API key is required."
+
+    Forbidden:
+      description: The API key does not have permission to perform this action.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: forbidden
+            message: "Insufficient permissions."
+
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: not_found
+            message: "Resource not found."
+
+    Conflict:
+      description: The request conflicts with existing state (e.g. duplicate name).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: conflict
+            message: "A resource with that name already exists."
+
+    UnprocessableEntity:
+      description: Request body failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: validation_error
+            message: "Request validation failed."
+            details:
+              name: "must not be empty"
+
+    InternalServerError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: internal_error
+            message: "An unexpected error occurred."
+
+# =============================================================================
+# Paths
+# =============================================================================
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Clusters
+  # ---------------------------------------------------------------------------
+
+  /clusters:
+    get:
+      operationId: listClusters
+      summary: List clusters
+      tags:
+        - Clusters
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ClusterStatus"
+          description: Filter by cluster status.
+      responses:
+        "200":
+          description: Paginated list of clusters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterList"
+              example:
+                items:
+                  - id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                    name: prod-eu-central
+                    lxd_endpoint: https://lxd.prod-eu-central.example.internal:8443
+                    hyperscaler_provider: hetzner
+                    hyperscaler_config:
+                      token_ref: "env:HETZNER_API_TOKEN"
+                      region: eu-central
+                      server_type: cx31
+                    scaling_config:
+                      high_watermark: 0.8
+                      low_watermark: 0.2
+                      sustained_seconds: 300
+                      cooldown_seconds: 600
+                      loop_interval_seconds: 60
+                    status: active
+                    created_at: "2026-04-17T10:00:00Z"
+                    updated_at: "2026-04-17T10:00:00Z"
+                total: 1
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: createCluster
+      summary: Register a new cluster
+      tags:
+        - Clusters
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClusterCreate"
+            example:
+              name: prod-eu-central
+              lxd_endpoint: https://lxd.prod-eu-central.example.internal:8443
+              hyperscaler_provider: hetzner
+              hyperscaler_config:
+                token_ref: "env:HETZNER_API_TOKEN"
+                region: eu-central
+                server_type: cx31
+              scaling_config:
+                high_watermark: 0.8
+                low_watermark: 0.2
+                sustained_seconds: 300
+                cooldown_seconds: 600
+                loop_interval_seconds: 60
+      responses:
+        "201":
+          description: Cluster registered successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cluster"
+              example:
+                id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                name: prod-eu-central
+                lxd_endpoint: https://lxd.prod-eu-central.example.internal:8443
+                hyperscaler_provider: hetzner
+                hyperscaler_config:
+                  token_ref: "env:HETZNER_API_TOKEN"
+                  region: eu-central
+                  server_type: cx31
+                scaling_config:
+                  high_watermark: 0.8
+                  low_watermark: 0.2
+                  sustained_seconds: 300
+                  cooldown_seconds: 600
+                  loop_interval_seconds: 60
+                status: active
+                created_at: "2026-04-17T10:00:00Z"
+                updated_at: "2026-04-17T10:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /clusters/{cluster_id}:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+
+    get:
+      operationId: getCluster
+      summary: Get a cluster by ID
+      tags:
+        - Clusters
+      responses:
+        "200":
+          description: Cluster details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cluster"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateCluster
+      summary: Update a cluster
+      tags:
+        - Clusters
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClusterUpdate"
+      responses:
+        "200":
+          description: Updated cluster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cluster"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteCluster
+      summary: Delete a cluster
+      description: |
+        Removes the cluster registration from the manager. This does **not**
+        deprovision any nodes or instances; those must be removed first.
+      tags:
+        - Clusters
+      responses:
+        "204":
+          description: Cluster deleted. No content returned.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Cluster still has active nodes or instances.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Nodes
+  # ---------------------------------------------------------------------------
+
+  /clusters/{cluster_id}/nodes:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+
+    get:
+      operationId: listNodes
+      summary: List nodes in a cluster
+      tags:
+        - Nodes
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/NodeStatus"
+          description: Filter by node status.
+      responses:
+        "200":
+          description: Paginated list of nodes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: createNode
+      summary: Register a node in a cluster
+      description: |
+        Registers an existing server as a node in the specified cluster.
+        To provision a new server and add it automatically, trigger a
+        `scale_out` scaling action instead.
+      tags:
+        - Nodes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NodeCreate"
+            example:
+              name: node-01
+              lxd_member_name: lxd-member-01
+              hyperscaler_server_id: "12345678"
+              cpu_cores: 4
+              memory_bytes: 8589934592
+              disk_bytes: 107374182400
+      responses:
+        "201":
+          description: Node registered successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+              example:
+                id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                cluster_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                name: node-01
+                lxd_member_name: lxd-member-01
+                hyperscaler_server_id: "12345678"
+                cpu_cores: 4
+                memory_bytes: 8589934592
+                disk_bytes: 107374182400
+                status: online
+                created_at: "2026-04-17T10:05:00Z"
+                updated_at: "2026-04-17T10:05:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /clusters/{cluster_id}/nodes/{node_id}:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+      - $ref: "#/components/parameters/NodeId"
+
+    get:
+      operationId: getNode
+      summary: Get a node by ID
+      tags:
+        - Nodes
+      responses:
+        "200":
+          description: Node details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateNode
+      summary: Update a node
+      tags:
+        - Nodes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NodeUpdate"
+      responses:
+        "200":
+          description: Updated node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteNode
+      summary: Remove a node from a cluster
+      description: |
+        Removes the node from the manager's database. The node must have no
+        running instances. To drain and deprovision a node automatically,
+        trigger a `scale_in` scaling action instead.
+      tags:
+        - Nodes
+      responses:
+        "204":
+          description: Node removed. No content returned.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Node still has running instances.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Instances
+  # ---------------------------------------------------------------------------
+
+  /clusters/{cluster_id}/instances:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+
+    get:
+      operationId: listInstances
+      summary: List instances in a cluster
+      tags:
+        - Instances
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/InstanceStatus"
+          description: Filter by instance status.
+        - name: node_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by the node currently running the instance.
+        - name: instance_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/InstanceType"
+          description: Filter by instance type.
+      responses:
+        "200":
+          description: Paginated list of instances.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: createInstance
+      summary: Create an instance in a cluster
+      description: |
+        Creates a new container or VM. The scheduler places it on the best
+        available node unless `node_id` is specified. A scale-out may be
+        triggered automatically if no node has sufficient capacity.
+      tags:
+        - Instances
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstanceCreate"
+            example:
+              name: web-01
+              instance_type: container
+              cpu_limit: 2
+              memory_limit: 1073741824
+              disk_limit: 10737418240
+              config:
+                boot.autostart: "true"
+                environment.APP_ENV: production
+      responses:
+        "201":
+          description: Instance created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Instance"
+              example:
+                id: b2c3d4e5-f6a7-8901-bcde-f12345678901
+                cluster_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                node_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                name: web-01
+                instance_type: container
+                cpu_limit: 2
+                memory_limit: 1073741824
+                disk_limit: 10737418240
+                config:
+                  boot.autostart: "true"
+                  environment.APP_ENV: production
+                status: running
+                created_at: "2026-04-17T10:10:00Z"
+                updated_at: "2026-04-17T10:10:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /clusters/{cluster_id}/instances/{instance_id}:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+      - $ref: "#/components/parameters/InstanceId"
+
+    get:
+      operationId: getInstance
+      summary: Get an instance by ID
+      tags:
+        - Instances
+      responses:
+        "200":
+          description: Instance details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Instance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateInstance
+      summary: Update an instance
+      description: |
+        Updates resource limits or LXD configuration for an instance.
+        Changes to `cpu_limit`, `memory_limit`, and `disk_limit` may require
+        the instance to be stopped before they take effect, depending on the
+        LXD configuration.
+      tags:
+        - Instances
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstanceUpdate"
+      responses:
+        "200":
+          description: Updated instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Instance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteInstance
+      summary: Delete an instance
+      description: |
+        Stops and removes the instance from LXD and the manager's database.
+        The instance must not be in a `migrating` state.
+      tags:
+        - Instances
+      responses:
+        "204":
+          description: Instance deleted. No content returned.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Instance is currently migrating and cannot be deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Instance control actions
+  # ---------------------------------------------------------------------------
+
+  /clusters/{cluster_id}/instances/{instance_id}/start:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+      - $ref: "#/components/parameters/InstanceId"
+
+    post:
+      operationId: startInstance
+      summary: Start an instance
+      description: Transitions the instance from `stopped` to `starting` / `running`.
+      tags:
+        - Instance Control
+      responses:
+        "200":
+          description: Instance start initiated. Returns the updated instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Instance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Instance is not in a state that allows starting (e.g. already running).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /clusters/{cluster_id}/instances/{instance_id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+      - $ref: "#/components/parameters/InstanceId"
+
+    post:
+      operationId: stopInstance
+      summary: Stop an instance
+      description: Transitions the instance from `running` to `stopping` / `stopped`.
+      tags:
+        - Instance Control
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force:
+                  type: boolean
+                  default: false
+                  description: |
+                    When `true`, the instance is forcefully terminated rather than
+                    gracefully shut down.
+      responses:
+        "200":
+          description: Instance stop initiated. Returns the updated instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Instance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Instance is not in a state that allows stopping (e.g. already stopped).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /clusters/{cluster_id}/instances/{instance_id}/migrate:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+      - $ref: "#/components/parameters/InstanceId"
+
+    post:
+      operationId: migrateInstance
+      summary: Live-migrate an instance to another node
+      description: |
+        Initiates a live migration of the instance to the specified target node
+        within the same cluster. The instance must be `running` and both nodes
+        must be `online`.
+
+        The response returns the created `Migration` record. Poll
+        `GET /v1/clusters/{cluster_id}/migrations/{migration_id}` to track
+        progress.
+      tags:
+        - Instance Control
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MigrateInstanceRequest"
+            example:
+              target_node_id: c3d4e5f6-a7b8-9012-cdef-012345678901
+      responses:
+        "202":
+          description: Migration accepted and in progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Migration"
+              example:
+                id: d4e5f6a7-b8c9-0123-defa-123456789012
+                instance_id: b2c3d4e5-f6a7-8901-bcde-f12345678901
+                scaling_action_id: null
+                source_node_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                target_node_id: c3d4e5f6-a7b8-9012-cdef-012345678901
+                status: in_progress
+                started_at: "2026-04-17T11:00:00Z"
+                completed_at: null
+                error_message: null
+                created_at: "2026-04-17T11:00:00Z"
+                updated_at: "2026-04-17T11:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            Instance is not in a `running` state, or the target node does not
+            have sufficient capacity or is not `online`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Scaling Actions
+  # ---------------------------------------------------------------------------
+
+  /clusters/{cluster_id}/scaling-actions:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+
+    get:
+      operationId: listScalingActions
+      summary: List scaling actions for a cluster
+      tags:
+        - Scaling Actions
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ScalingActionStatus"
+          description: Filter by scaling action status.
+        - name: action_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/ScalingActionType"
+          description: Filter by action type.
+      responses:
+        "200":
+          description: Paginated list of scaling actions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScalingActionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: triggerScalingAction
+      summary: Manually trigger a scaling action
+      description: |
+        Requests a manual scale-out or scale-in for the cluster, bypassing the
+        reconciliation loop's normal thresholds. The action is subject to the
+        cluster's cooldown period.
+      tags:
+        - Scaling Actions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScalingActionTriggerRequest"
+            example:
+              action_type: scale_out
+              trigger_reason: "Manual scale-out requested by operator"
+      responses:
+        "202":
+          description: Scaling action accepted and queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScalingAction"
+              example:
+                id: e5f6a7b8-c9d0-1234-efab-234567890123
+                cluster_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                action_type: scale_out
+                trigger_reason: "Manual scale-out requested by operator"
+                status: pending
+                node_id: null
+                started_at: null
+                completed_at: null
+                error_message: null
+                created_at: "2026-04-17T11:30:00Z"
+                updated_at: "2026-04-17T11:30:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            A scaling action is already in progress, or the cluster is within
+            its cooldown period.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /clusters/{cluster_id}/scaling-actions/{action_id}:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+      - $ref: "#/components/parameters/ScalingActionId"
+
+    get:
+      operationId: getScalingAction
+      summary: Get a scaling action by ID
+      tags:
+        - Scaling Actions
+      responses:
+        "200":
+          description: Scaling action details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScalingAction"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Migrations
+  # ---------------------------------------------------------------------------
+
+  /clusters/{cluster_id}/migrations:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+
+    get:
+      operationId: listMigrations
+      summary: List migration records for a cluster
+      tags:
+        - Migrations
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/MigrationStatus"
+          description: Filter by migration status.
+        - name: instance_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter migrations for a specific instance.
+      responses:
+        "200":
+          description: Paginated list of migration records.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MigrationList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /clusters/{cluster_id}/migrations/{migration_id}:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+      - $ref: "#/components/parameters/MigrationId"
+
+    get:
+      operationId: getMigration
+      summary: Get a migration record by ID
+      tags:
+        - Migrations
+      responses:
+        "200":
+          description: Migration record details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Migration"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Audit Events
+  # ---------------------------------------------------------------------------
+
+  /clusters/{cluster_id}/events:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+
+    get:
+      operationId: listEvents
+      summary: List audit events for a cluster
+      description: |
+        Returns the append-only audit log for all state-changing operations
+        within the cluster, newest first.
+      tags:
+        - Events
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
+        - name: resource_type
+          in: query
+          schema:
+            type: string
+            enum:
+              - cluster
+              - node
+              - instance
+              - scaling_action
+              - migration
+          description: Filter events by resource type.
+        - name: resource_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter events for a specific resource.
+        - name: action
+          in: query
+          schema:
+            type: string
+          description: Filter events by action name (e.g. `create`, `delete`, `scale_out`).
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Return only events that occurred at or after this timestamp.
+        - name: until
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Return only events that occurred before or at this timestamp.
+      responses:
+        "200":
+          description: Paginated list of audit events (newest first).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditEventList"
+              example:
+                items:
+                  - id: 3
+                    cluster_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                    resource_type: instance
+                    resource_id: b2c3d4e5-f6a7-8901-bcde-f12345678901
+                    action: create
+                    actor: cli-key-prod
+                    details:
+                      name: web-01
+                      instance_type: container
+                    occurred_at: "2026-04-17T10:10:00Z"
+                  - id: 2
+                    cluster_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                    resource_type: node
+                    resource_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                    action: create
+                    actor: cli-key-prod
+                    details:
+                      name: node-01
+                    occurred_at: "2026-04-17T10:05:00Z"
+                  - id: 1
+                    cluster_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                    resource_type: cluster
+                    resource_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                    action: create
+                    actor: cli-key-prod
+                    details:
+                      name: prod-eu-central
+                    occurred_at: "2026-04-17T10:00:00Z"
+                total: 3
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
