@@ -28,6 +28,12 @@ build-migrate: ## Build the migrate binary
 test: ## Run all tests
 	go test ./...
 
+# ─── Authentication ───────────────────────────────────────────────────────────
+
+.PHONY: gen-api-key
+gen-api-key: ## Generate a new API key and print its bcrypt hash for use in API_KEYS
+	go run ./tools/gen-api-key
+
 # ─── Database / migrations ────────────────────────────────────────────────────
 
 .PHONY: db-up

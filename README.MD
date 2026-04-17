@@ -54,6 +54,79 @@ Schema changes are managed with versioned SQL migration files stored under `db/m
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/) for the local PostgreSQL instance.
 - Go 1.25+ to build the `migrate` binary.
 
+## Running the Manager Service
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/) for the local PostgreSQL instance.
+- Go 1.25+ to build and run the manager binary.
+- A bcrypt-hashed API key in the `API_KEYS` environment variable (see below).
+
+### 1. Generate an API key
+
+The manager requires at least one API key to start. Generate a key and its bcrypt hash with the included tool:
+
+```sh
+make gen-api-key
+```
+
+Example output:
+
+```
+Raw key  : Tz3xQ...8Qw
+Bcrypt   : $2a$12$...
+
+Add to API_KEYS in .env or export directly:
+  export API_KEYS='$2a$12$...'
+```
+
+Copy the `export` line into your shell (or `.env` file). Give the **raw key** to the API client — it is shown once and cannot be recovered from the hash.
+
+### 2. Start PostgreSQL and apply migrations
+
+```sh
+make db-up
+make migrate-up
+```
+
+### 3. Start the manager
+
+```sh
+export DATABASE_URL='postgres://weaver:secret@localhost:5432/weaver?sslmode=disable'
+export API_KEYS='$2a$12$...'   # paste the bcrypt hash from step 1
+go run ./cmd/manager
+```
+
+Or build first:
+
+```sh
+make build-manager
+DATABASE_URL='...' API_KEYS='...' ./manager
+```
+
+### 4. Verify with a health check
+
+```sh
+curl http://localhost:8080/v1/health
+# → {"status":"ok"}
+```
+
+Protected endpoints require the `Authorization` header:
+
+```sh
+curl -H "Authorization: Bearer <raw-key>" http://localhost:8080/v1/...
+```
+
+Requests with a missing, malformed, or invalid key receive a `401 Unauthorized` response.
+
+### Adding more API keys
+
+Each client should have a unique key. Generate additional keys with `make gen-api-key` and append their hashes to `API_KEYS` as a comma-separated list:
+
+```sh
+export API_KEYS='$2a$12$firsthash,$2a$12$secondhash'
+```
+
 ### Quickstart — apply migrations on a fresh database
 
 ```sh
