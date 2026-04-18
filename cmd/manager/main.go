@@ -69,7 +69,7 @@ func main() {
 	// -------------------------------------------------------------------------
 	// HTTP server: run in a separate goroutine.
 	// -------------------------------------------------------------------------
-	srv := api.New(cfg.HTTPAddr, logger)
+	srv := api.New(cfg.HTTPAddr, logger, cfg.APIKeys)
 
 	serverErr := make(chan error, 1)
 	go func() {

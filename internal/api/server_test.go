@@ -10,7 +10,8 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	srv := api.New(":0", slog.Default())
+	// Health is unauthenticated — pass no API key hashes.
+	srv := api.New(":0", slog.Default(), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	rec := httptest.NewRecorder()

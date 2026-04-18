@@ -15,18 +15,20 @@ import (
 // It implements http.Handler so that individual handlers can be exercised in
 // unit tests without binding to a real network port.
 type Server struct {
-	srv    *http.Server
-	mux    *http.ServeMux
-	logger *slog.Logger
+	srv          *http.Server
+	mux          *http.ServeMux
+	logger       *slog.Logger
+	apiKeyHashes []string
 }
 
 // New creates a new Server bound to addr. The provided logger is used for
-// request-level diagnostics.
-func New(addr string, logger *slog.Logger) *Server {
+// request-level diagnostics. apiKeyHashes must be a slice of bcrypt-hashed API
+// keys; protected routes require a matching Bearer token in every request.
+func New(addr string, logger *slog.Logger, apiKeyHashes []string) *Server {
 	mux := http.NewServeMux()
-	s := &Server{logger: logger, mux: mux}
+	s := &Server{logger: logger, mux: mux, apiKeyHashes: apiKeyHashes}
 
-	// Register routes.
+	// Unauthenticated routes — reachable by liveness probes without credentials.
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 
 	s.srv = &http.Server{

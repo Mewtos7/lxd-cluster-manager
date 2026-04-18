@@ -9,6 +9,7 @@ import (
 
 func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/weaver")
+	t.Setenv("API_KEYS", "$2a$10$placeholder.hash.value.for.testing.purposes.only12345")
 	// Leave all other vars unset so defaults apply.
 
 	cfg, err := config.Load()
@@ -36,6 +37,7 @@ func TestLoad_CustomValues(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("RECONCILE_INTERVAL", "120s")
 	t.Setenv("SHUTDOWN_TIMEOUT", "10s")
+	t.Setenv("API_KEYS", "hash1,hash2")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -54,11 +56,15 @@ func TestLoad_CustomValues(t *testing.T) {
 	if cfg.ShutdownTimeout != 10*time.Second {
 		t.Errorf("ShutdownTimeout: want 10s, got %v", cfg.ShutdownTimeout)
 	}
+	if len(cfg.APIKeys) != 2 {
+		t.Errorf("APIKeys: want 2 entries, got %d", len(cfg.APIKeys))
+	}
 }
 
 func TestLoad_MissingDatabaseURL(t *testing.T) {
 	// Ensure DATABASE_URL is not set.
 	t.Setenv("DATABASE_URL", "")
+	t.Setenv("API_KEYS", "somehash")
 
 	_, err := config.Load()
 	if err == nil {
@@ -69,9 +75,52 @@ func TestLoad_MissingDatabaseURL(t *testing.T) {
 func TestLoad_InvalidLogLevel(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://host/db")
 	t.Setenv("LOG_LEVEL", "verbose")
+	t.Setenv("API_KEYS", "somehash")
 
 	_, err := config.Load()
 	if err == nil {
 		t.Fatal("expected an error for invalid LOG_LEVEL, got nil")
+	}
+}
+
+func TestLoad_MissingAPIKeys(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("expected an error when API_KEYS is missing, got nil")
+	}
+}
+
+func TestLoad_APIKeysLoaded(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "hash_a,hash_b,hash_c")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(cfg.APIKeys) != 3 {
+		t.Errorf("APIKeys: want 3 entries, got %d", len(cfg.APIKeys))
+	}
+}
+
+func TestLoad_APIKeysWhitespaceTrimmed(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	// Spaces around commas should be tolerated.
+	t.Setenv("API_KEYS", "hash_a, hash_b , hash_c")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(cfg.APIKeys) != 3 {
+		t.Errorf("APIKeys: want 3 entries after trimming, got %d", len(cfg.APIKeys))
+	}
+	for i, k := range cfg.APIKeys {
+		if k != cfg.APIKeys[i] {
+			t.Errorf("APIKeys[%d]: unexpected whitespace", i)
+		}
 	}
 }

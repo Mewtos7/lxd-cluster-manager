@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -34,6 +35,13 @@ type Config struct {
 	// requests to complete during graceful shutdown.
 	// Environment variable: SHUTDOWN_TIMEOUT (default: "30s")
 	ShutdownTimeout time.Duration
+
+	// APIKeys is the list of bcrypt-hashed API keys authorised to call
+	// protected endpoints. Each entry is a bcrypt hash of a raw key issued to
+	// a client. Configured via the API_KEYS environment variable as a
+	// comma-separated list of hashes.
+	// Environment variable: API_KEYS (required)
+	APIKeys []string
 }
 
 // Load reads configuration from environment variables, applies defaults for
@@ -45,6 +53,7 @@ func Load() (*Config, error) {
 		LogLevel:          envOr("LOG_LEVEL", "info"),
 		ReconcileInterval: mustParseDuration(envOr("RECONCILE_INTERVAL", "60s")),
 		ShutdownTimeout:   mustParseDuration(envOr("SHUTDOWN_TIMEOUT", "30s")),
+		APIKeys:           splitNonEmpty(os.Getenv("API_KEYS"), ","),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -78,6 +87,10 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("SHUTDOWN_TIMEOUT must be a positive duration"))
 	}
 
+	if len(c.APIKeys) == 0 {
+		errs = append(errs, errors.New("API_KEYS is required: provide at least one bcrypt-hashed API key"))
+	}
+
 	return errors.Join(errs...)
 }
 
@@ -98,4 +111,20 @@ func mustParseDuration(s string) time.Duration {
 		panic(fmt.Sprintf("config: invalid duration literal %q: %v", s, err))
 	}
 	return d
+}
+
+// splitNonEmpty splits s by sep, trims whitespace from each token, and returns
+// only non-empty tokens. Trimming makes API_KEYS tolerant of values like
+// "hash1, hash2" where operators may have added spaces around commas.
+func splitNonEmpty(s, sep string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, sep) {
+		if t := strings.TrimSpace(part); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
