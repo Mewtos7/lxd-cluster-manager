@@ -25,6 +25,7 @@ import (
 	"github.com/Mewtos7/lx-container-weaver/internal/api"
 	"github.com/Mewtos7/lx-container-weaver/internal/config"
 	"github.com/Mewtos7/lx-container-weaver/internal/orchestrator"
+	"github.com/Mewtos7/lx-container-weaver/internal/persistence/postgres"
 )
 
 func main() {
@@ -58,6 +59,17 @@ func main() {
 	// -------------------------------------------------------------------------
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	// -------------------------------------------------------------------------
+	// Database connectivity: open a PostgreSQL pool and fail fast if the
+	// configured DATABASE_URL is unreachable.
+	// -------------------------------------------------------------------------
+	pool, err := postgres.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("database connection failed", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
 
 	// -------------------------------------------------------------------------
 	// Orchestration loop: run in a separate goroutine; terminates when ctx is
