@@ -40,8 +40,9 @@ gen-api-key: ## Generate a new API key and print its bcrypt hash for use in API_
 dev-up: db-up migrate-up ## Start the full local dev environment (db + migrations)
 	@echo ""
 	@echo "✓ Local environment ready."
-	@echo "  1. Copy .env.example to .env and fill in API_KEYS (run 'make gen-api-key' first)."
-	@echo "  2. Run: source .env && go run ./cmd/manager"
+	@echo "  1. Copy .env.example to .env and set API_KEYS (run 'make gen-api-key' first)."
+	@echo "  2. Add the database connection value printed by this command to your .env file."
+	@echo "  3. Run: source .env && go run ./cmd/manager"
 	@echo "  Run 'make dev-reset' to tear down all local state."
 
 .PHONY: dev-reset

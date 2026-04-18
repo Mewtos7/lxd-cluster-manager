@@ -55,6 +55,7 @@ Full setup instructions — prerequisites, quick-start, environment variables, d
 cp .env.example .env          # copy config template
 make gen-api-key              # generate an API key; paste the bcrypt hash into .env
 make dev-up                   # start PostgreSQL and apply migrations
+							 # then add the printed database connection value into .env
 source .env && go run ./cmd/manager
 ```
 

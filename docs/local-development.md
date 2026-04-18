@@ -48,10 +48,10 @@ Add to API_KEYS in .env or export directly:
   export API_KEYS='$2a$12$...'
 ```
 
-Copy the `Bcrypt` value into `.env`:
+Copy the `Bcrypt` value into `.env` (wrap it in single quotes so `$` stays literal):
 
 ```
-API_KEYS=$2a$12$...
+API_KEYS='$2a$12$...'
 ```
 
 Keep the **raw key** — you need it to authenticate API requests. It cannot be recovered from the hash.
@@ -59,7 +59,7 @@ Keep the **raw key** — you need it to authenticate API requests. It cannot be 
 To add more keys (one per client), run `make gen-api-key` again and append the new hash to `API_KEYS` as a comma-separated list:
 
 ```
-API_KEYS=$2a$12$firsthash,$2a$12$secondhash
+API_KEYS='$2a$12$firsthash,$2a$12$secondhash'
 ```
 
 ### 3. Start the environment
@@ -72,10 +72,13 @@ This single command starts the PostgreSQL container and applies all pending data
 
 ```
 ✓ Local environment ready.
-  1. Copy .env.example to .env and fill in API_KEYS (run 'make gen-api-key' first).
-  2. Run: source .env && go run ./cmd/manager
+  1. Copy .env.example to .env and set API_KEYS (run 'make gen-api-key' first).
+  2. Add the database connection value printed by this command to your .env file.
+  3. Run: source .env && go run ./cmd/manager
   Run 'make dev-reset' to tear down all local state.
 ```
+
+Use the database connection value printed by `make dev-up` when updating `.env` before starting the manager.
 
 ### 4. Start the manager
 
@@ -178,7 +181,11 @@ Something else is bound to 8080. Set `HTTP_ADDR` in `.env` to an alternative por
 
 ### Manager exits with `DATABASE_URL is required`
 
-Ensure `DATABASE_URL` is set in `.env` and that you sourced the file (`source .env`) before starting the manager.
+Ensure `DATABASE_URL` is set in `.env` and that you sourced the file before starting the manager:
+
+```sh
+source .env && go run ./cmd/manager
+```
 
 ### Migrations fail with `connection refused`
 
