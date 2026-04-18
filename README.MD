@@ -2,6 +2,7 @@
 
 Smart cluster orchestration for LXD environments with automatic scaling, consolidation, and workload management to keep infrastructure efficient and cost-aware.
 
+[![CI](https://github.com/Mewtos7/lx-container-weaver/actions/workflows/ci.yml/badge.svg)](https://github.com/Mewtos7/lx-container-weaver/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/Mewtos7/lx-container-weaver?style=for-the-badge)](LICENSE)
 [![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen?style=for-the-badge)](CONTRIBUTING.md)
 [![Last Commit](https://img.shields.io/github/last-commit/Mewtos7/lx-container-weaver?style=for-the-badge)](https://github.com/Mewtos7/lx-container-weaver/commits/main)
@@ -163,6 +164,36 @@ Where `<version>` is a zero-padded four-digit integer (for example, `0001`, `000
 - `.down.sql` rolls back the same change.
 
 Migrations are executed in ascending version order, and each migration runs inside a single database transaction.
+
+## Local Validation
+
+Run the full validation suite before opening a pull request:
+
+```sh
+make validate
+```
+
+This runs build, vet, fmt-check, test, and lint in sequence. Each stage can also be run individually:
+
+| Command | What it checks |
+|---------|----------------|
+| `make build` | Compiles all packages |
+| `make test` | Runs the full test suite |
+| `make vet` | Runs `go vet` static analysis |
+| `make fmt-check` | Checks that all Go files are `gofmt`-formatted |
+| `make lint` | Runs `golangci-lint` (requires installation, see below) |
+
+### Installing golangci-lint
+
+```sh
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+```
+
+See the [golangci-lint installation guide](https://golangci-lint.run/welcome/install/) for alternative methods.
+
+### CI
+
+Every push to `main` and every pull request triggers the same validation steps automatically via GitHub Actions (`.github/workflows/ci.yml`).
 
 ## Troubleshooting
 

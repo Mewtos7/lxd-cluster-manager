@@ -28,6 +28,28 @@ build-migrate: ## Build the migrate binary
 test: ## Run all tests
 	go test ./...
 
+# ─── Lint ─────────────────────────────────────────────────────────────────────
+
+.PHONY: vet
+vet: ## Run go vet on all packages
+	go vet ./...
+
+.PHONY: fmt-check
+fmt-check: ## Fail if any Go source files are not gofmt-formatted
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "The following files are not formatted (run gofmt -w .):" ; \
+		echo "$$unformatted" ; \
+		exit 1 ; \
+	fi
+
+.PHONY: lint
+lint: ## Run golangci-lint (install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+	golangci-lint run ./...
+
+.PHONY: validate
+validate: build vet fmt-check test lint ## Run all validation checks (build, vet, fmt-check, test, lint)
+
 # ─── Authentication ───────────────────────────────────────────────────────────
 
 .PHONY: gen-api-key

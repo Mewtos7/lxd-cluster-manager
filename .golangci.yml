@@ -1,0 +1,11 @@
+# golangci-lint configuration for LX Container Weaver.
+# Docs: https://golangci-lint.run/usage/configuration/
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+
+run:
+  timeout: 5m

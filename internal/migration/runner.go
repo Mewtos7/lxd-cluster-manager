@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 // Runner applies and rolls back SQL migrations stored in an [io/fs.FS].
 type Runner struct {
-	db  *sql.DB
+	db   *sql.DB
 	fsys fs.FS
 }
 

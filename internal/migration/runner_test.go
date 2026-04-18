@@ -37,8 +37,8 @@ func TestNew(t *testing.T) {
 // exercises sorting across three migrations.
 func TestVersionFromPathExamples(t *testing.T) {
 	tests := []struct {
-		path    string
-		want    string
+		path string
+		want string
 	}{
 		{"migrations/0001_initial_schema.up.sql", "0001_initial_schema"},
 		{"migrations/0002_add_users.up.sql", "0002_add_users"},

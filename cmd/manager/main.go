@@ -134,4 +134,3 @@ func newLogger(levelStr string) *slog.Logger {
 	handler := slog.NewJSONHandler(os.Stdout, opts)
 	return slog.New(handler)
 }
-
