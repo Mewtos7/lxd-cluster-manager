@@ -49,13 +49,17 @@ The goal is simple:
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/) for the local PostgreSQL instance.
 - Go 1.25+ to build and run the manager binary.
-- A bcrypt-hashed API key in the `API_KEYS` environment variable (see [Generate an API key](#1-generate-an-api-key) below).
+
 
 ## Database Migrations
 
 Schema changes are managed with versioned SQL migration files stored under `db/migrations/`. A lightweight Go migration runner (in `internal/migration/`) applies them in order and tracks the applied state in a `schema_migrations` table.
 
 ## Running the Manager Service
+
+### Environment variables
+
+Neccessary envrionment variables are documented via [.env.example](.env.example)
 
 ### 1. Generate an API key
 
@@ -76,6 +80,12 @@ Add to API_KEYS in .env or export directly:
 ```
 
 Copy the `export` line into your shell (or `.env` file). Give the **raw key** to the API client — it is shown once and cannot be recovered from the hash.
+
+Each client should have a unique key. Generate additional keys with `make gen-api-key` and append their hashes to `API_KEYS` as a comma-separated list:
+
+```sh
+export API_KEYS='$2a$12$firsthash,$2a$12$secondhash'
+```
 
 ### 2. Start PostgreSQL and apply migrations
 
@@ -114,18 +124,10 @@ curl -H "Authorization: Bearer <raw-key>" http://localhost:8080/v1/...
 
 Requests with a missing, malformed, or invalid key receive a `401 Unauthorized` response.
 
-### Adding more API keys
-
-Each client should have a unique key. Generate additional keys with `make gen-api-key` and append their hashes to `API_KEYS` as a comma-separated list:
+## Apply migrations on a fresh database
 
 ```sh
-export API_KEYS='$2a$12$firsthash,$2a$12$secondhash'
-```
-
-### Quickstart — apply migrations on a fresh database
-
-```sh
-# 1. Start a local PostgreSQL container
+# 1. Start a local PostgreSQL container or use an existing instance
 make db-up
 
 # 2. Apply all pending migrations
