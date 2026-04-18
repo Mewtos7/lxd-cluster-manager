@@ -17,6 +17,7 @@ import (
 type Server struct {
 	srv          *http.Server
 	mux          *http.ServeMux
+	handler      http.Handler // mux with base middleware applied
 	logger       *slog.Logger
 	apiKeyHashes []string
 }
@@ -26,14 +27,27 @@ type Server struct {
 // keys; protected routes require a matching Bearer token in every request.
 func New(addr string, logger *slog.Logger, apiKeyHashes []string) *Server {
 	mux := http.NewServeMux()
-	s := &Server{logger: logger, mux: mux, apiKeyHashes: apiKeyHashes}
+
+	// Base middleware chain applied to all routes, authenticated or not:
+	//   RequestID → RequestLogger → Recoverer → mux
+	// RequestID must be outermost so the ID is available to all downstream
+	// middleware. RequestLogger wraps Recoverer so that panic-recovered 500
+	// responses are captured in the access log.
+	handler := RequestID(RequestLogger(logger, Recoverer(logger, mux)))
+
+	s := &Server{
+		logger:       logger,
+		mux:          mux,
+		handler:      handler,
+		apiKeyHashes: apiKeyHashes,
+	}
 
 	// Unauthenticated routes — reachable by liveness probes without credentials.
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 
 	s.srv = &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -45,11 +59,12 @@ func New(addr string, logger *slog.Logger, apiKeyHashes []string) *Server {
 	return s
 }
 
-// ServeHTTP implements http.Handler, delegating to the internal mux. This
-// allows the server's routes to be exercised in unit tests without binding to
-// a real network port.
+// ServeHTTP implements http.Handler, delegating to the full middleware chain.
+// This allows the server's routes to be exercised in unit tests without binding
+// to a real network port, while still exercising request ID, logging, and
+// panic recovery middleware.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }
 
 // ListenAndServe starts the HTTP server. It blocks until the server is shut
@@ -75,3 +90,4 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
+
