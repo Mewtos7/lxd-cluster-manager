@@ -17,3 +17,6 @@ vendor/
 # OS-generated files
 .DS_Store
 Thumbs.db
+
+# Local environment files (not committed; should be created from .env.example)
+.env
