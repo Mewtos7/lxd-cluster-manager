@@ -6,7 +6,7 @@
 //
 // # Sync algorithm
 //
-// Each [InstanceSyncer.Sync] call performs a three-phase operation:
+// Each [InstanceSyncer.Sync] call performs a five-phase operation:
 //
 //  1. Fetch phase — all instance data is read from LXD. If the LXD endpoint is
 //     unreachable the method returns an error immediately and the persisted
@@ -18,14 +18,15 @@
 //     any known node are persisted with an empty NodeID; the scheduler must
 //     treat them as unplaceable until a subsequent sync resolves the placement.
 //
-//  3. Reconcile phase — the fetched data is applied to the repository:
-//     - Instances present in LXD but absent from the repository are created.
-//     - Instances present in both LXD and the repository are updated to reflect
-//     the latest status, placement (NodeID), and config.
-//     - Instances present in the repository but absent from LXD are marked
-//     [model.InstanceStatusUnknown] so that the scheduler does not operate on
-//     stale records. The NodeID is cleared to indicate that placement cannot
-//     be confirmed.
+//  3. Load phase — the current persisted instance records for the cluster are
+//     fetched and indexed by name for O(1) lookup during reconciliation.
+//
+//  4. Upsert phase — each LXD instance is created (if new) or updated (if
+//     already tracked) with the latest status, placement (NodeID), and config.
+//
+//  5. Mark-disappeared phase — instances present in the repository but absent
+//     from LXD are marked [model.InstanceStatusUnknown] and their NodeID is
+//     cleared so the scheduler does not operate on stale records.
 //
 // The algorithm is idempotent: repeated invocations with the same LXD state
 // converge to the same repository state without creating duplicates.
@@ -98,8 +99,8 @@ func (s *InstanceSyncer) Sync(ctx context.Context, clusterID string) error {
 	// ── Phase 2: Resolve placement ────────────────────────────────────────────
 	//
 	// Build a map from LXD member name → persisted Node.ID so we can set the
-	// correct NodeID on each instance record. We load nodes after instances to
-	// keep both reads close together; neither is modified here.
+	// correct NodeID on each instance record. We load nodes before instances to
+	// keep placement resolution close to the fetch phase; neither is modified here.
 
 	persistedNodes, err := s.nodes.ListNodes(ctx, clusterID)
 	if err != nil {
