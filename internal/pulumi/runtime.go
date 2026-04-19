@@ -1,10 +1,18 @@
 // Package pulumi provides the Pulumi Automation API runtime for in-process
 // infrastructure provisioning as specified in ADR-005. The [Runtime] type
-// manages Pulumi stack lifecycle (create, update, destroy) in a transient
-// workspace: no persistent state backend is required or configured by the
-// operator. Each operation creates a self-managed temporary workspace that is
-// cleaned up automatically, keeping the deployment model simple and stateless
-// from the operator's perspective.
+// manages Pulumi stack lifecycle (create, update, destroy) with per-stack
+// state isolation.
+//
+// When a state directory is configured, each stack stores its Pulumi state in
+// a deterministic subdirectory: stateDir/<stackName>/. This provides explicit
+// per-cluster isolation so that infrastructure operations for one cluster
+// cannot accidentally read or mutate the state of another cluster. The mapping
+// is stable and reviewable: the same cluster ID always resolves to the same
+// state path.
+//
+// When no state directory is configured (stateDir is empty), each operation
+// creates a self-managed temporary workspace that is cleaned up automatically,
+// keeping the deployment model simple for local testing.
 //
 // Idempotency is achieved through Pulumi's declarative model: the program
 // describes the desired state and the provider's API handles reconciliation
@@ -51,39 +59,48 @@ type UpResult struct {
 // Runtime manages Pulumi stack lifecycle in-process using the Automation API
 // (ADR-005). It is safe for concurrent use.
 //
-// Each operation creates a self-managed temporary workspace directory that is
-// removed after the operation completes. No persistent state backend needs to
-// be configured by the operator. Idempotency is achieved through Pulumi's
-// declarative model combined with the provider's idempotent API.
+// When stateDir is non-empty, each stack stores its Pulumi state in a
+// dedicated subdirectory (stateDir/<stackName>/) providing deterministic,
+// persistent, and isolated state management per cluster. When stateDir is
+// empty, each operation uses a transient workspace that is cleaned up
+// automatically.
 type Runtime struct {
 	projectName string
+	stateDir    string
 }
 
 // New creates a Runtime for the given project name.
 //
-// projectName must be non-empty. No filesystem paths or backends need to be
-// configured; the runtime manages transient workspaces automatically.
-func New(projectName string) (*Runtime, error) {
+// projectName must be non-empty. stateDir is the base directory for persistent
+// per-stack state storage. When non-empty, each stack stores its state in
+// stateDir/<stackName>/, providing explicit per-cluster state isolation. When
+// empty, each operation uses a transient workspace that is cleaned up
+// automatically.
+func New(projectName, stateDir string) (*Runtime, error) {
 	if projectName == "" {
 		return nil, fmt.Errorf("pulumi: project name must not be empty")
 	}
-	return &Runtime{projectName: projectName}, nil
+	return &Runtime{projectName: projectName, stateDir: stateDir}, nil
 }
 
-// Up creates or selects the named stack in a transient workspace, applies cfg,
-// runs program, and returns the stack outputs. The temporary workspace is
+// Up creates or selects the named stack in a workspace, applies cfg, runs
+// program, and returns the stack outputs.
+//
+// When the Runtime has a state directory configured, the workspace is
+// persistent (stateDir/<stackName>/) and state is preserved between calls.
+// When no state directory is configured, a temporary workspace is created and
 // removed automatically when the operation completes.
 //
 // Errors from the Pulumi engine are wrapped with the stack name and operation
 // so that callers can surface actionable context to operators.
 func (r *Runtime) Up(ctx context.Context, stackName string, program ProgramFunc, cfg StackConfig) (*UpResult, error) {
-	tmpDir, err := os.MkdirTemp("", "lx-container-weaver-pulumi-*")
+	workDir, cleanup, err := r.workspaceDir(stackName)
 	if err != nil {
-		return nil, fmt.Errorf("pulumi: failed to create workspace directory: %w", err)
+		return nil, err
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer cleanup()
 
-	stack, err := r.upsertStack(ctx, stackName, program, tmpDir)
+	stack, err := r.upsertStack(ctx, stackName, program, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -97,18 +114,23 @@ func (r *Runtime) Up(ctx context.Context, stackName string, program ProgramFunc,
 	return &UpResult{Outputs: outputsFromMap(res.Outputs)}, nil
 }
 
-// Destroy creates a transient workspace for the named stack and destroys all
-// its managed resources. The temporary workspace is removed automatically.
+// Destroy selects the named stack in its workspace and destroys all managed
+// resources.
+//
+// When the Runtime has a state directory configured, the persistent workspace
+// directory (stateDir/<stackName>/) is used so that Pulumi can locate the
+// existing stack state. When no state directory is configured, a temporary
+// workspace is used and removed automatically.
 //
 // Errors are wrapped with the stack name and operation context.
 func (r *Runtime) Destroy(ctx context.Context, stackName string, program ProgramFunc) error {
-	tmpDir, err := os.MkdirTemp("", "lx-container-weaver-pulumi-*")
+	workDir, cleanup, err := r.workspaceDir(stackName)
 	if err != nil {
-		return fmt.Errorf("pulumi: failed to create workspace directory: %w", err)
+		return err
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer cleanup()
 
-	stack, err := r.upsertStack(ctx, stackName, program, tmpDir)
+	stack, err := r.upsertStack(ctx, stackName, program, workDir)
 	if err != nil {
 		return err
 	}
@@ -121,6 +143,48 @@ func (r *Runtime) Destroy(ctx context.Context, stackName string, program Program
 // ProjectName returns the Pulumi project name used by this Runtime.
 func (r *Runtime) ProjectName() string {
 	return r.projectName
+}
+
+// StateDir returns the base state directory configured for this Runtime.
+// An empty string indicates that transient workspace behavior is in effect.
+func (r *Runtime) StateDir() string {
+	return r.stateDir
+}
+
+// StackStateDir returns the deterministic persistent state directory for the
+// given stack name. The returned path is stateDir/<stackName>, which is stable
+// across runs: the same stack name always resolves to the same path.
+//
+// When the Runtime was created without a state directory, StackStateDir returns
+// an empty string, indicating that transient workspace behavior is in effect
+// and no persistent state is maintained for the stack.
+func (r *Runtime) StackStateDir(stackName string) string {
+	if r.stateDir == "" {
+		return ""
+	}
+	return filepath.Join(r.stateDir, stackName)
+}
+
+// workspaceDir returns the directory to use as the Pulumi workspace for the
+// given stack name, along with a cleanup function to call when done.
+//
+// When stateDir is set, the directory (stateDir/<stackName>/) is created if
+// needed and the cleanup function is a no-op, preserving state between calls.
+// When stateDir is empty, a temporary directory is created and the cleanup
+// function removes it.
+func (r *Runtime) workspaceDir(stackName string) (string, func(), error) {
+	if r.stateDir != "" {
+		dir := filepath.Join(r.stateDir, stackName)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", nil, fmt.Errorf("pulumi: failed to create state directory for stack %q: %w", stackName, err)
+		}
+		return dir, func() {}, nil
+	}
+	tmpDir, err := os.MkdirTemp("", "lx-container-weaver-pulumi-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("pulumi: failed to create workspace directory: %w", err)
+	}
+	return tmpDir, func() { _ = os.RemoveAll(tmpDir) }, nil
 }
 
 // upsertStack creates or selects a local inline stack backed by the file-system

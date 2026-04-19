@@ -198,7 +198,21 @@ To verify the provisioning workflow locally with a real Hetzner Cloud account:
 
 The manager uses the **Pulumi Automation API** (ADR-005) to provision cloud servers in-process — no separate `pulumi` CLI invocation or shell scripts are involved.
 
-The runtime operates without a persistent state backend. Each provisioning operation uses a self-managed transient workspace that is cleaned up automatically. Idempotency is achieved through Pulumi's declarative model: the program describes the desired infrastructure state and the Hetzner Cloud API reconciles it without manual drift steps (duplicate server names are not created).
+### Per-Cluster State Isolation
+
+The runtime implements a **per-cluster state model**: each cluster's Pulumi stack stores its state in a dedicated subdirectory under the configured base directory (`PULUMI_STATE_DIR/<stackName>/`). This provides:
+
+- **Deterministic mapping**: the same cluster ID always resolves to the same state path (`PULUMI_STATE_DIR/hetzner-<clusterID>/`).
+- **Explicit isolation**: infrastructure operations for one cluster cannot read or mutate the state of another cluster.
+- **Persistent state**: state survives between `Up` and `Destroy` calls, enabling Pulumi to track and reconcile existing resources correctly.
+
+Set `PULUMI_STATE_DIR` to a writable directory to enable per-cluster persistent state:
+
+```sh
+export PULUMI_STATE_DIR=/var/lib/lx-container-weaver/pulumi-state
+```
+
+When `PULUMI_STATE_DIR` is not set, the runtime falls back to transient workspaces (a temporary directory per operation, cleaned up automatically). This is suitable for local testing but does not persist state across runs.
 
 ## Database Migrations
 

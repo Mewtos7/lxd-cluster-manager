@@ -152,3 +152,31 @@ func TestLoad_HetznerAPITokenSet(t *testing.T) {
 		t.Errorf("HetznerAPIToken: want tok-test-abc, got %q", cfg.HetznerAPIToken)
 	}
 }
+
+func TestLoad_PulumiStateDirOptional(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "somehash")
+	t.Setenv("PULUMI_STATE_DIR", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error when PULUMI_STATE_DIR is empty, got %v", err)
+	}
+	if cfg.PulumiStateDir != "" {
+		t.Errorf("PulumiStateDir: want empty string, got %q", cfg.PulumiStateDir)
+	}
+}
+
+func TestLoad_PulumiStateDirSet(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "somehash")
+	t.Setenv("PULUMI_STATE_DIR", "/var/lib/pulumi/state")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cfg.PulumiStateDir != "/var/lib/pulumi/state" {
+		t.Errorf("PulumiStateDir: want /var/lib/pulumi/state, got %q", cfg.PulumiStateDir)
+	}
+}

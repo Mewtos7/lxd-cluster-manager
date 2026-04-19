@@ -64,17 +64,21 @@ func main() {
 
 	// -------------------------------------------------------------------------
 	// Pulumi Automation runtime: initialise the in-process infrastructure
-	// provisioning engine (ADR-005). No state backend needs to be configured;
-	// the runtime uses a transient workspace per operation and cleans it up
-	// automatically. Idempotency is achieved through Pulumi's declarative
-	// model combined with the provider's idempotent API.
+	// provisioning engine (ADR-005). When PULUMI_STATE_DIR is set, each
+	// cluster's stack stores its state in a dedicated subdirectory
+	// (PULUMI_STATE_DIR/<stackName>/) providing deterministic, persistent, and
+	// isolated state management per cluster. When unset, each operation uses a
+	// transient workspace that is cleaned up automatically.
 	// -------------------------------------------------------------------------
-	pulumiRT, err := pulumiruntime.New("lx-container-weaver")
+	pulumiRT, err := pulumiruntime.New("lx-container-weaver", cfg.PulumiStateDir)
 	if err != nil {
 		logger.Error("failed to initialise Pulumi runtime", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("Pulumi runtime initialised", "project", pulumiRT.ProjectName())
+	logger.Info("Pulumi runtime initialised",
+		"project", pulumiRT.ProjectName(),
+		"state_dir", pulumiRT.StateDir(),
+	)
 
 	// -------------------------------------------------------------------------
 	// Database connectivity: open a PostgreSQL pool and fail fast if the
