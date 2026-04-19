@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Mewtos7/lx-container-weaver/internal/bootstrap"
+	"github.com/Mewtos7/lx-container-weaver/internal/persistence"
+	"github.com/Mewtos7/lx-container-weaver/internal/persistence/model"
 	"github.com/Mewtos7/lx-container-weaver/internal/provider"
 )
 
@@ -27,12 +29,30 @@ type NodeBootstrapRunner interface {
 	Run(ctx context.Context, nodeName string, cfg bootstrap.Config) bootstrap.Result
 }
 
+// NodeInventorySyncer synchronises the node inventory for a single cluster.
+// It is satisfied by [inventory.Syncer].
+//
+// The interface is kept narrow so that tests can substitute a lightweight stub
+// without pulling in the full LXD client dependency.
+type NodeInventorySyncer interface {
+	Sync(ctx context.Context, clusterID string) error
+}
+
+// InstanceInventorySyncer synchronises the instance inventory for a single
+// cluster. It is satisfied by [inventory.InstanceSyncer].
+type InstanceInventorySyncer interface {
+	Sync(ctx context.Context, clusterID string) error
+}
+
 // Orchestrator runs the per-cluster reconciliation loop.
 type Orchestrator struct {
-	interval  time.Duration
-	logger    *slog.Logger
-	provider  provider.HyperscalerProvider
-	bootstrap NodeBootstrapRunner
+	interval       time.Duration
+	logger         *slog.Logger
+	provider       provider.HyperscalerProvider
+	bootstrap      NodeBootstrapRunner
+	clusterRepo    persistence.ClusterRepository
+	nodeSyncer     NodeInventorySyncer
+	instanceSyncer InstanceInventorySyncer
 }
 
 // Option is a functional option for configuring an Orchestrator at
@@ -59,6 +79,31 @@ func WithProvider(p provider.HyperscalerProvider) Option {
 // until a runner is available.
 func WithBootstrapWorkflow(r NodeBootstrapRunner) Option {
 	return func(o *Orchestrator) { o.bootstrap = r }
+}
+
+// WithClusterRepository wires a [persistence.ClusterRepository] into the
+// Orchestrator so that the reconciliation loop can enumerate all registered
+// clusters on each pass.
+//
+// If no repository is configured the loop logs a debug message and skips the
+// reconciliation step; this allows the service to start without a database
+// connection during development.
+func WithClusterRepository(r persistence.ClusterRepository) Option {
+	return func(o *Orchestrator) { o.clusterRepo = r }
+}
+
+// WithNodeSyncer wires a [NodeInventorySyncer] into the Orchestrator. On each
+// reconciliation pass the syncer is called for every registered cluster so
+// that the node inventory reflects the current LXD cluster-member state.
+func WithNodeSyncer(s NodeInventorySyncer) Option {
+	return func(o *Orchestrator) { o.nodeSyncer = s }
+}
+
+// WithInstanceSyncer wires an [InstanceInventorySyncer] into the Orchestrator.
+// On each reconciliation pass the syncer is called for every registered cluster
+// so that the instance inventory reflects the current LXD instance state.
+func WithInstanceSyncer(s InstanceInventorySyncer) Option {
+	return func(o *Orchestrator) { o.instanceSyncer = s }
 }
 
 // New creates an Orchestrator that runs a reconciliation pass every interval.
@@ -95,11 +140,21 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	}
 }
 
+// ReconcileOnce executes a single reconciliation pass synchronously. It is
+// equivalent to one tick of the loop driven by [Run] and is primarily
+// intended for use in tests and manual validation tooling.
+func (o *Orchestrator) ReconcileOnce(ctx context.Context) {
+	o.reconcile(ctx)
+}
+
 // reconcile performs a single evaluation pass across all managed clusters.
-// This is a stub implementation; the full scheduling, scale-out, and
-// consolidation logic will be added in subsequent stories.
 //
-// The intended scale-out sequence (ADR-006) is:
+// It reads the current cluster list from the repository and calls
+// reconcileCluster for each entry. Failures within a single cluster are
+// logged and do not abort the pass for the remaining clusters, ensuring the
+// loop stays stable across partial failures (ADR-006).
+//
+// The intended per-cluster scale-out sequence (ADR-006) is:
 //  1. Detect that capacity is insufficient (high-water mark exceeded or no
 //     node can accept a pending workload).
 //  2. Call o.provider.ProvisionServer to create a new cloud server.
@@ -110,17 +165,62 @@ func (o *Orchestrator) Run(ctx context.Context) {
 //     reconciliation pass can retry or alert the operator.
 //  4. Add the successfully bootstrapped node to the cluster inventory so that
 //     the scheduler can place workloads on it.
-func (o *Orchestrator) reconcile(_ context.Context) {
+func (o *Orchestrator) reconcile(ctx context.Context) {
 	o.logger.Debug("reconcile pass started")
-	if o.provider == nil {
-		o.logger.Debug("reconcile pass completed", "provider", "none")
+
+	if o.clusterRepo == nil {
+		o.logger.Debug("reconcile pass skipped: no cluster repository configured")
 		return
 	}
-	if o.bootstrap == nil {
-		o.logger.Warn("bootstrap workflow not configured; newly provisioned nodes will not be onboarded")
+
+	clusters, err := o.clusterRepo.ListClusters(ctx)
+	if err != nil {
+		o.logger.Error("reconcile: failed to list clusters", "error", err)
+		return
 	}
-	// TODO: query cluster list from repository, evaluate each cluster, and
-	// invoke o.provider.ProvisionServer / o.bootstrap.Run / DeprovisionServer
-	// as needed.
-	o.logger.Debug("reconcile pass completed")
+
+	o.logger.Debug("reconcile: evaluating clusters", "count", len(clusters))
+	for _, cluster := range clusters {
+		o.reconcileCluster(ctx, cluster)
+	}
+
+	o.logger.Debug("reconcile pass completed", "clusters", len(clusters))
+}
+
+// reconcileCluster performs a single reconciliation pass for one cluster.
+//
+// It runs the node and instance inventory sync steps before any scheduling or
+// scaling decisions so that those steps always operate on up-to-date state.
+// Errors from individual sync steps are logged and do not abort the remaining
+// steps for the same cluster, keeping the loop resilient to partial failures.
+func (o *Orchestrator) reconcileCluster(ctx context.Context, cluster *model.Cluster) {
+	log := o.logger.With("cluster_id", cluster.ID, "cluster_name", cluster.Name)
+	log.Debug("reconcile cluster: started")
+
+	if o.nodeSyncer != nil {
+		if err := o.nodeSyncer.Sync(ctx, cluster.ID); err != nil {
+			log.Error("reconcile cluster: node inventory sync failed", "error", err)
+			// Continue — instance sync and scaling steps are independent.
+		}
+	}
+
+	if o.instanceSyncer != nil {
+		if err := o.instanceSyncer.Sync(ctx, cluster.ID); err != nil {
+			log.Error("reconcile cluster: instance inventory sync failed", "error", err)
+			// Continue — scaling steps do not depend on a successful instance sync.
+		}
+	}
+
+	if o.provider == nil {
+		log.Debug("reconcile cluster: no provider configured; skipping scaling steps")
+	} else {
+		if o.bootstrap == nil {
+			log.Warn("reconcile cluster: bootstrap workflow not configured; newly provisioned nodes will not be onboarded")
+		}
+		// TODO: evaluate scaling decisions (ADR-006 high/low-water mark logic)
+		// and invoke o.provider.ProvisionServer / o.bootstrap.Run /
+		// o.provider.DeprovisionServer as needed.
+	}
+
+	log.Debug("reconcile cluster: completed")
 }

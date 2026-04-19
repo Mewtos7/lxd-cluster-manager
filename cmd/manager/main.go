@@ -76,14 +76,15 @@ func main() {
 	// Orchestration loop: run in a separate goroutine; terminates when ctx is
 	// cancelled.
 	// -------------------------------------------------------------------------
+	clusterRepo := postgres.NewClusterRepo(pool)
 	orchOpts := buildOrchOpts(cfg, logger)
+	orchOpts = append(orchOpts, orchestrator.WithClusterRepository(clusterRepo))
 	orch := orchestrator.New(cfg.ReconcileInterval, logger, orchOpts...)
 	go orch.Run(ctx)
 
 	// -------------------------------------------------------------------------
 	// HTTP server: run in a separate goroutine.
 	// -------------------------------------------------------------------------
-	clusterRepo := postgres.NewClusterRepo(pool)
 	srv := api.New(cfg.HTTPAddr, logger, cfg.APIKeys, api.WithClusterRepository(clusterRepo))
 
 	serverErr := make(chan error, 1)
