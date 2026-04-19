@@ -178,6 +178,9 @@ func (r *Runtime) workspaceDir(stackName string) (string, func(), error) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", nil, fmt.Errorf("pulumi: failed to create state directory for stack %q: %w", stackName, err)
 		}
+		// 0o700 restricts access to the owning process only. Pulumi state
+		// files may contain sensitive configuration values; limiting
+		// permissions to the owner follows the principle of least privilege.
 		return dir, func() {}, nil
 	}
 	tmpDir, err := os.MkdirTemp("", "lx-container-weaver-pulumi-*")

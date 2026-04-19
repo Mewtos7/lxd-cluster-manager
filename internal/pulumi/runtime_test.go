@@ -122,8 +122,10 @@ func TestStackStateDir_IsolatedPerCluster(t *testing.T) {
 			if id == otherId {
 				continue
 			}
-			if strings.HasPrefix(dir+string(filepath.Separator), otherDir+string(filepath.Separator)) {
-				t.Errorf("StackStateDir: cluster %q path %q is nested under cluster %q path %q; isolation violated", id, dir, otherId, otherDir)
+			// Verify neither directory is nested inside the other.
+			if strings.HasPrefix(dir+string(filepath.Separator), otherDir+string(filepath.Separator)) ||
+				strings.HasPrefix(otherDir+string(filepath.Separator), dir+string(filepath.Separator)) {
+				t.Errorf("StackStateDir: cluster %q path %q and cluster %q path %q are nested; isolation violated", id, dir, otherId, otherDir)
 			}
 		}
 	}
