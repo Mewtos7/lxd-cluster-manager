@@ -125,7 +125,6 @@ All variables are documented in `.env.example`. Do not commit `.env`.
 | `LOG_LEVEL` | `info` | Minimum log level: `debug`, `info`, `warn`, `error` |
 | `RECONCILE_INTERVAL` | `60s` | How often the orchestration loop runs |
 | `SHUTDOWN_TIMEOUT` | `30s` | Maximum wait for in-flight requests on shutdown |
-| `PULUMI_STATE_DIR` | `~/.lx-container-weaver/state` | Local Pulumi stack state directory (dev only; see [Pulumi State](#pulumi-state)) |
 | `HETZNER_API_TOKEN` | _(empty — optional)_ | Hetzner Cloud API token; enables Hetzner provider |
 
 ## Reset Workflow
@@ -137,23 +136,11 @@ make dev-up
 
 `dev-reset` removes local PostgreSQL state and `dev-up` recreates it.
 
-## Pulumi State
+## Pulumi Automation Runtime
 
 The manager uses the **Pulumi Automation API** (ADR-005) to provision cloud servers in-process — no separate `pulumi` CLI invocation or shell scripts are involved.
 
-### Local development
-
-By default, Pulumi stores stack state on the local filesystem under `~/.lx-container-weaver/state` (configurable via `PULUMI_STATE_DIR`). No additional setup is needed for local development.
-
-### Production
-
-For production deployments, configure an S3-compatible object-storage backend by setting `PULUMI_BACKEND_URL` before starting the manager:
-
-```sh
-export PULUMI_BACKEND_URL=s3://my-bucket/lx-container-weaver
-```
-
-The manager honours this environment variable automatically. No code changes are required.
+The runtime operates without a persistent state backend. Each provisioning operation uses a self-managed transient workspace that is cleaned up automatically. Idempotency is achieved through Pulumi's declarative model: the program describes the desired infrastructure state and the provider's API reconciles it without manual drift steps.
 
 ### Triggering provisioning locally
 

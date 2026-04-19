@@ -125,34 +125,6 @@ func TestLoad_APIKeysWhitespaceTrimmed(t *testing.T) {
 	}
 }
 
-func TestLoad_PulumiStateDirDefault(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://host/db")
-	t.Setenv("API_KEYS", "somehash")
-	t.Setenv("PULUMI_STATE_DIR", "")
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.PulumiStateDir == "" {
-		t.Error("PulumiStateDir: want non-empty default, got empty string")
-	}
-}
-
-func TestLoad_PulumiStateDirCustom(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://host/db")
-	t.Setenv("API_KEYS", "somehash")
-	t.Setenv("PULUMI_STATE_DIR", "/tmp/pulumi-state")
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.PulumiStateDir != "/tmp/pulumi-state" {
-		t.Errorf("PulumiStateDir: want /tmp/pulumi-state, got %s", cfg.PulumiStateDir)
-	}
-}
-
 func TestLoad_HetznerAPITokenOptional(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://host/db")
 	t.Setenv("API_KEYS", "somehash")

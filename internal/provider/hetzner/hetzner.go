@@ -113,19 +113,19 @@ func (p *Provider) ListServers(_ context.Context) ([]*provider.ServerInfo, error
 func validateSpec(spec provider.ServerSpec) error {
 	var errs []error
 	if spec.Name == "" {
-		errs = append(errs, errors.New("Name is required"))
+		errs = append(errs, errors.New("name is required"))
 	}
 	if spec.ServerType == "" {
-		errs = append(errs, errors.New("ServerType is required"))
+		errs = append(errs, errors.New("serverType is required"))
 	}
 	if spec.Region == "" {
-		errs = append(errs, errors.New("Region is required"))
+		errs = append(errs, errors.New("region is required"))
 	}
 	if spec.Image == "" {
-		errs = append(errs, errors.New("Image is required"))
+		errs = append(errs, errors.New("image is required"))
 	}
 	if spec.ClusterID == "" {
-		errs = append(errs, errors.New("ClusterID is required"))
+		errs = append(errs, errors.New("clusterID is required"))
 	}
 	return errors.Join(errs...)
 }

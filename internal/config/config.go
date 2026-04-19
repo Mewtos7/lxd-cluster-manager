@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -44,14 +43,6 @@ type Config struct {
 	// Environment variable: API_KEYS (required)
 	APIKeys []string
 
-	// PulumiStateDir is the directory where Pulumi stores stack state when
-	// using the local filesystem backend. Suitable for local development.
-	// For production deployments, set PULUMI_BACKEND_URL to an
-	// S3-compatible object-storage URL instead; the Pulumi runtime honours
-	// that environment variable automatically.
-	// Environment variable: PULUMI_STATE_DIR (default: "~/.lx-container-weaver/state")
-	PulumiStateDir string
-
 	// HetznerAPIToken is the Hetzner Cloud API token used by the Hetzner
 	// provider to authenticate Pulumi operations. Optional: when empty the
 	// Hetzner provider is not initialised and the manager runs without a
@@ -70,7 +61,6 @@ func Load() (*Config, error) {
 		ReconcileInterval: mustParseDuration(envOr("RECONCILE_INTERVAL", "60s")),
 		ShutdownTimeout:   mustParseDuration(envOr("SHUTDOWN_TIMEOUT", "30s")),
 		APIKeys:           splitNonEmpty(os.Getenv("API_KEYS"), ","),
-		PulumiStateDir:    expandHome(envOr("PULUMI_STATE_DIR", "~/.lx-container-weaver/state")),
 		HetznerAPIToken:   os.Getenv("HETZNER_API_TOKEN"),
 	}
 
@@ -145,17 +135,4 @@ func splitNonEmpty(s, sep string) []string {
 		}
 	}
 	return out
-}
-
-// expandHome replaces a leading "~/" with the current user's home directory.
-// If the home directory cannot be determined, the path is returned unchanged.
-func expandHome(path string) string {
-	if !strings.HasPrefix(path, "~/") {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-	return filepath.Join(home, path[2:])
 }
