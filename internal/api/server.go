@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/Mewtos7/lx-container-weaver/internal/persistence"
 )
 
 // Server wraps the standard library HTTP server and owns the route registrations.
@@ -20,12 +22,25 @@ type Server struct {
 	handler      http.Handler // mux with base middleware applied
 	logger       *slog.Logger
 	apiKeyHashes []string
+	clusters     persistence.ClusterRepository
+}
+
+// Option is a functional option for Server.
+type Option func(*Server)
+
+// WithClusterRepository configures the server to use repo for cluster
+// persistence. When set, the cluster CRUD endpoints are registered under
+// /v1/clusters and protected by the API key middleware.
+func WithClusterRepository(repo persistence.ClusterRepository) Option {
+	return func(s *Server) {
+		s.clusters = repo
+	}
 }
 
 // New creates a new Server bound to addr. The provided logger is used for
 // request-level diagnostics. apiKeyHashes must be a slice of bcrypt-hashed API
 // keys; protected routes require a matching Bearer token in every request.
-func New(addr string, logger *slog.Logger, apiKeyHashes []string) *Server {
+func New(addr string, logger *slog.Logger, apiKeyHashes []string, opts ...Option) *Server {
 	mux := http.NewServeMux()
 
 	// Base middleware chain applied to all routes, authenticated or not:
@@ -42,8 +57,21 @@ func New(addr string, logger *slog.Logger, apiKeyHashes []string) *Server {
 		apiKeyHashes: apiKeyHashes,
 	}
 
+	for _, o := range opts {
+		o(s)
+	}
+
 	// Unauthenticated routes — reachable by liveness probes without credentials.
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
+
+	// Cluster routes — protected by API key authentication.
+	if s.clusters != nil {
+		mux.Handle("GET /v1/clusters", s.requireAPIKey(http.HandlerFunc(s.handleListClusters)))
+		mux.Handle("POST /v1/clusters", s.requireAPIKey(http.HandlerFunc(s.handleCreateCluster)))
+		mux.Handle("GET /v1/clusters/{cluster_id}", s.requireAPIKey(http.HandlerFunc(s.handleGetCluster)))
+		mux.Handle("PUT /v1/clusters/{cluster_id}", s.requireAPIKey(http.HandlerFunc(s.handleUpdateCluster)))
+		mux.Handle("DELETE /v1/clusters/{cluster_id}", s.requireAPIKey(http.HandlerFunc(s.handleDeleteCluster)))
+	}
 
 	s.srv = &http.Server{
 		Addr:         addr,

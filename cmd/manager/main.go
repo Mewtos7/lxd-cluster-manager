@@ -98,7 +98,8 @@ func main() {
 	// -------------------------------------------------------------------------
 	// HTTP server: run in a separate goroutine.
 	// -------------------------------------------------------------------------
-	srv := api.New(cfg.HTTPAddr, logger, cfg.APIKeys)
+	clusterRepo := postgres.NewClusterRepo(pool)
+	srv := api.New(cfg.HTTPAddr, logger, cfg.APIKeys, api.WithClusterRepository(clusterRepo))
 
 	serverErr := make(chan error, 1)
 	go func() {
