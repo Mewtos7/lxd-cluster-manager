@@ -92,3 +92,74 @@ type InstanceInfo struct {
 	// (e.g. {"limits.cpu": "2", "limits.memory": "512MB"}).
 	Config map[string]string
 }
+
+// ClusterStatus holds the current cluster formation state of an LXD node as
+// returned by GET /1.0/cluster.
+type ClusterStatus struct {
+	// Enabled is true when this node is part of a cluster.
+	Enabled bool
+
+	// ServerName is the LXD cluster member name of this node.
+	ServerName string
+
+	// ClusterAddress is the address at which this node is reachable by other
+	// cluster members (e.g. "https://10.0.0.1:8443").
+	ClusterAddress string
+}
+
+// StoragePoolConfig holds storage pool configuration for an LXD cluster member
+// supplied via the preseed API.
+type StoragePoolConfig struct {
+	// Name is the storage pool name (e.g. "default").
+	Name string
+
+	// Driver is the storage backend driver (e.g. "dir", "zfs", "btrfs").
+	Driver string
+}
+
+// ClusterInitConfig holds the preseed configuration for initialising the seed
+// node of a new LXD cluster via PUT /1.0/cluster.
+type ClusterInitConfig struct {
+	// ServerName is the LXD cluster member name to assign to the seed node
+	// (e.g. "lxd1"). Must be unique within the cluster.
+	ServerName string
+
+	// ClusterName is the human-readable name of the cluster to create.
+	ClusterName string
+
+	// ListenAddress is the HTTPS address on which the seed node listens for
+	// cluster-member connections (e.g. "10.0.0.1:8443"). Used by joining
+	// nodes to reach this node.
+	ListenAddress string
+
+	// StoragePool configures the storage pool on the seed node.
+	StoragePool StoragePoolConfig
+
+	// TrustToken is the shared secret used to authorise joining nodes. It is
+	// passed to the joining node's JoinCluster call so it can authenticate
+	// with the seed.
+	TrustToken string
+}
+
+// ClusterJoinConfig holds the preseed configuration for adding a node to an
+// existing LXD cluster via PUT /1.0/cluster.
+type ClusterJoinConfig struct {
+	// ServerName is the LXD cluster member name to assign to this node
+	// (e.g. "lxd2"). Must be unique within the cluster.
+	ServerName string
+
+	// ClusterAddress is the HTTPS address of the seed node
+	// (e.g. "https://10.0.0.1:8443").
+	ClusterAddress string
+
+	// ClusterCertificate is the PEM-encoded TLS certificate of the seed node,
+	// used by this node to verify the cluster's identity during join.
+	ClusterCertificate string
+
+	// TrustToken is the shared secret that authenticates this node to the
+	// seed. Must match the TrustToken used when the seed was initialised.
+	TrustToken string
+
+	// StoragePool configures the storage pool on the joining node.
+	StoragePool StoragePoolConfig
+}

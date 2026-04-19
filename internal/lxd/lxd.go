@@ -124,6 +124,45 @@ type apiMoveRequest struct {
 	Target    string `json:"target,omitempty"`
 }
 
+// apiClusterStatus maps to the LXD cluster status response from
+// GET /1.0/cluster.
+type apiClusterStatus struct {
+	Enabled        bool   `json:"enabled"`
+	ServerName     string `json:"server_name"`
+	ClusterAddress string `json:"cluster_address"`
+}
+
+// apiClusterMemberConfig is a single key-value entry in the LXD preseed
+// member_config array. It configures an entity (e.g. "storage-pool") on a
+// cluster member during initialization or join.
+type apiClusterMemberConfig struct {
+	Entity      string `json:"entity"`
+	Name        string `json:"name"`
+	Key         string `json:"key"`
+	Value       string `json:"value"`
+	Description string `json:"description,omitempty"`
+}
+
+// apiClusterPut is the JSON body sent to PUT /1.0/cluster for both seed
+// initialization and joining an existing cluster.
+type apiClusterPut struct {
+	ServerName         string                   `json:"server_name"`
+	Enabled            bool                     `json:"enabled"`
+	ClusterAddress     string                   `json:"cluster_address,omitempty"`
+	ClusterCertificate string                   `json:"cluster_certificate,omitempty"`
+	ClusterPassword    string                   `json:"cluster_password,omitempty"`
+	MemberConfig       []apiClusterMemberConfig `json:"member_config"`
+}
+
+// apiServerInfo maps to the response from GET /1.0. Only the environment
+// sub-object is decoded; it carries the node's TLS certificate which joining
+// nodes use to verify the cluster's identity.
+type apiServerInfo struct {
+	Environment struct {
+		Certificate string `json:"certificate"`
+	} `json:"environment"`
+}
+
 // ─── Client construction ──────────────────────────────────────────────────────
 
 // lxdClient is the concrete implementation of [Client]. It communicates with
@@ -331,6 +370,115 @@ func (c *lxdClient) MoveInstance(ctx context.Context, instanceName, targetNode s
 	return nil
 }
 
+// GetClusterStatus returns the current cluster formation state of the LXD node.
+func (c *lxdClient) GetClusterStatus(ctx context.Context) (*ClusterStatus, error) {
+	var status apiClusterStatus
+	if err := c.getJSON(ctx, "/1.0/cluster", &status); err != nil {
+		return nil, fmt.Errorf("lxd: get cluster status: %w", err)
+	}
+	return &ClusterStatus{
+		Enabled:        status.Enabled,
+		ServerName:     status.ServerName,
+		ClusterAddress: status.ClusterAddress,
+	}, nil
+}
+
+// GetClusterCertificate retrieves the PEM-encoded TLS certificate of the LXD
+// server from GET /1.0.
+func (c *lxdClient) GetClusterCertificate(ctx context.Context) (string, error) {
+	var info apiServerInfo
+	if err := c.getJSON(ctx, "/1.0", &info); err != nil {
+		return "", fmt.Errorf("lxd: get cluster certificate: %w", err)
+	}
+	if info.Environment.Certificate == "" {
+		return "", fmt.Errorf("lxd: get cluster certificate: server returned empty certificate")
+	}
+	return info.Environment.Certificate, nil
+}
+
+// InitCluster initialises a new LXD cluster on the seed node using the provided
+// preseed configuration.
+func (c *lxdClient) InitCluster(ctx context.Context, cfg ClusterInitConfig) error {
+	if cfg.ServerName == "" {
+		return fmt.Errorf("lxd: init cluster: ServerName must not be empty")
+	}
+	if cfg.ListenAddress == "" {
+		return fmt.Errorf("lxd: init cluster: ListenAddress must not be empty")
+	}
+	if cfg.StoragePool.Name == "" {
+		return fmt.Errorf("lxd: init cluster: StoragePool.Name must not be empty")
+	}
+	if cfg.StoragePool.Driver == "" {
+		return fmt.Errorf("lxd: init cluster: StoragePool.Driver must not be empty")
+	}
+
+	body := apiClusterPut{
+		ServerName: cfg.ServerName,
+		Enabled:    true,
+		MemberConfig: []apiClusterMemberConfig{
+			{
+				Entity: "storage-pool",
+				Name:   cfg.StoragePool.Name,
+				Key:    "driver",
+				Value:  cfg.StoragePool.Driver,
+			},
+		},
+	}
+
+	operationPath, err := c.putJSON(ctx, "/1.0/cluster", body)
+	if err != nil {
+		return fmt.Errorf("lxd: init cluster on %q: %w", cfg.ServerName, err)
+	}
+	if err := c.waitOperation(ctx, operationPath); err != nil {
+		return fmt.Errorf("lxd: init cluster on %q: %w", cfg.ServerName, err)
+	}
+	return nil
+}
+
+// JoinCluster adds this node to an existing LXD cluster.
+func (c *lxdClient) JoinCluster(ctx context.Context, cfg ClusterJoinConfig) error {
+	if cfg.ServerName == "" {
+		return fmt.Errorf("lxd: join cluster: ServerName must not be empty")
+	}
+	if cfg.ClusterAddress == "" {
+		return fmt.Errorf("lxd: join cluster: ClusterAddress must not be empty")
+	}
+	if cfg.ClusterCertificate == "" {
+		return fmt.Errorf("lxd: join cluster: ClusterCertificate must not be empty")
+	}
+	if cfg.TrustToken == "" {
+		return fmt.Errorf("lxd: join cluster: TrustToken must not be empty")
+	}
+
+	memberConfig := []apiClusterMemberConfig{}
+	if cfg.StoragePool.Name != "" && cfg.StoragePool.Driver != "" {
+		memberConfig = append(memberConfig, apiClusterMemberConfig{
+			Entity: "storage-pool",
+			Name:   cfg.StoragePool.Name,
+			Key:    "driver",
+			Value:  cfg.StoragePool.Driver,
+		})
+	}
+
+	body := apiClusterPut{
+		ServerName:         cfg.ServerName,
+		Enabled:            true,
+		ClusterAddress:     cfg.ClusterAddress,
+		ClusterCertificate: cfg.ClusterCertificate,
+		ClusterPassword:    cfg.TrustToken,
+		MemberConfig:       memberConfig,
+	}
+
+	operationPath, err := c.putJSON(ctx, "/1.0/cluster", body)
+	if err != nil {
+		return fmt.Errorf("lxd: join cluster for %q: %w", cfg.ServerName, err)
+	}
+	if err := c.waitOperation(ctx, operationPath); err != nil {
+		return fmt.Errorf("lxd: join cluster for %q: %w", cfg.ServerName, err)
+	}
+	return nil
+}
+
 // ─── Internal HTTP helpers ────────────────────────────────────────────────────
 
 // getJSON performs a GET request to the given path (relative to the endpoint)
@@ -357,12 +505,27 @@ func (c *lxdClient) getJSON(ctx context.Context, path string, out any) error {
 // For asynchronous responses it returns the operation path so the caller can
 // wait on it.
 func (c *lxdClient) postJSON(ctx context.Context, path string, body any) (operationPath string, err error) {
+	return c.writeJSON(ctx, http.MethodPost, path, body)
+}
+
+// putJSON performs a PUT request to the given path with a JSON-encoded body.
+// For synchronous responses it returns an empty operation path.
+// For asynchronous responses it returns the operation path so the caller can
+// wait on it.
+func (c *lxdClient) putJSON(ctx context.Context, path string, body any) (operationPath string, err error) {
+	return c.writeJSON(ctx, http.MethodPut, path, body)
+}
+
+// writeJSON is the shared implementation for postJSON and putJSON. It marshals
+// body, sends a request with the given HTTP method, and returns the LXD
+// operation path for async responses or an empty string for sync responses.
+func (c *lxdClient) writeJSON(ctx context.Context, method, path string, body any) (operationPath string, err error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("lxd: marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+path, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, bytes.NewReader(b))
 	if err != nil {
 		return "", fmt.Errorf("%w: build request: %s", ErrUnreachable, err)
 	}

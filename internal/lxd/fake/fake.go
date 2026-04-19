@@ -39,11 +39,35 @@ type Fake struct {
 	resources map[string]lxd.NodeResources // keyed by node name
 	instances map[string]lxd.InstanceInfo  // keyed by instance name
 
+	// clustered tracks whether this fake node has been initialised as part of
+	// a cluster (via InitCluster or JoinCluster, or seeded via SetClustered).
+	clustered bool
+
+	// clusterStatus is returned by GetClusterStatus when it has been seeded
+	// via SetClusterStatus.
+	clusterStatus *lxd.ClusterStatus
+
+	// certificate is returned by GetClusterCertificate. Seed it via
+	// SetClusterCertificate.
+	certificate string
+
+	// InitError, if non-nil, is returned by InitCluster for every call.
+	InitError error
+
+	// JoinError, if non-nil, is returned by JoinCluster for every call.
+	JoinError error
+
 	// MoveError, if non-nil, is returned by MoveInstance for every call.
 	MoveError error
 
 	// Moves records the history of MoveInstance calls.
 	Moves []MoveRecord
+
+	// InitCalls records the ClusterInitConfig passed to each InitCluster call.
+	InitCalls []lxd.ClusterInitConfig
+
+	// JoinCalls records the ClusterJoinConfig passed to each JoinCluster call.
+	JoinCalls []lxd.ClusterJoinConfig
 }
 
 // New returns an empty Fake with no nodes or instances.
@@ -53,6 +77,33 @@ func New() *Fake {
 		resources: make(map[string]lxd.NodeResources),
 		instances: make(map[string]lxd.InstanceInfo),
 	}
+}
+
+// SetClustered seeds the fake's cluster formation state. When true,
+// GetClusterStatus reports Enabled: true and InitCluster / JoinCluster return
+// [lxd.ErrClusterAlreadyBootstrapped].
+func (f *Fake) SetClustered(enabled bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clustered = enabled
+}
+
+// SetClusterStatus seeds a specific ClusterStatus to be returned by
+// GetClusterStatus. This takes precedence over the simpler SetClustered flag.
+func (f *Fake) SetClusterStatus(s lxd.ClusterStatus) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := s
+	f.clusterStatus = &cp
+	f.clustered = s.Enabled
+}
+
+// SetClusterCertificate seeds the PEM certificate returned by
+// GetClusterCertificate.
+func (f *Fake) SetClusterCertificate(pem string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.certificate = pem
 }
 
 // AddNode seeds the fake with a cluster member. Subsequent calls with the same
@@ -186,5 +237,81 @@ func (f *Fake) MoveInstance(_ context.Context, instanceName, targetNode string) 
 
 	inst.Location = targetNode
 	f.instances[instanceName] = inst
+	return nil
+}
+
+// GetClusterStatus returns the seeded cluster formation state. If
+// SetClusterStatus was called, that value is returned. Otherwise a status
+// derived from the SetClustered flag is returned.
+func (f *Fake) GetClusterStatus(_ context.Context) (*lxd.ClusterStatus, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	if f.clusterStatus != nil {
+		cp := *f.clusterStatus
+		return &cp, nil
+	}
+	return &lxd.ClusterStatus{Enabled: f.clustered}, nil
+}
+
+// GetClusterCertificate returns the certificate seeded via SetClusterCertificate.
+// Returns an error if no certificate has been seeded.
+func (f *Fake) GetClusterCertificate(_ context.Context) (string, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	if f.certificate == "" {
+		return "", fmt.Errorf("fake lxd: get cluster certificate: no certificate seeded")
+	}
+	return f.certificate, nil
+}
+
+// InitCluster simulates initialising the seed node. If InitError is set it is
+// returned immediately. If the node is already clustered,
+// [lxd.ErrClusterAlreadyBootstrapped] is returned. On success the fake marks
+// itself as clustered and records the config in InitCalls.
+func (f *Fake) InitCluster(_ context.Context, cfg lxd.ClusterInitConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.InitCalls = append(f.InitCalls, cfg)
+
+	if f.InitError != nil {
+		return f.InitError
+	}
+	if f.clustered {
+		return fmt.Errorf("fake lxd: init cluster: %w", lxd.ErrClusterAlreadyBootstrapped)
+	}
+	f.clustered = true
+	if f.clusterStatus == nil {
+		f.clusterStatus = &lxd.ClusterStatus{}
+	}
+	f.clusterStatus.Enabled = true
+	f.clusterStatus.ServerName = cfg.ServerName
+	return nil
+}
+
+// JoinCluster simulates adding this node to an existing cluster. If JoinError
+// is set it is returned immediately. If the node is already clustered,
+// [lxd.ErrClusterAlreadyBootstrapped] is returned. On success the fake marks
+// itself as clustered and records the config in JoinCalls.
+func (f *Fake) JoinCluster(_ context.Context, cfg lxd.ClusterJoinConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.JoinCalls = append(f.JoinCalls, cfg)
+
+	if f.JoinError != nil {
+		return f.JoinError
+	}
+	if f.clustered {
+		return fmt.Errorf("fake lxd: join cluster: %w", lxd.ErrClusterAlreadyBootstrapped)
+	}
+	f.clustered = true
+	if f.clusterStatus == nil {
+		f.clusterStatus = &lxd.ClusterStatus{}
+	}
+	f.clusterStatus.Enabled = true
+	f.clusterStatus.ServerName = cfg.ServerName
 	return nil
 }

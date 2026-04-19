@@ -57,6 +57,7 @@ func TestSentinelErrors_Distinct(t *testing.T) {
 		lxd.ErrInstanceNotFound,
 		lxd.ErrUnreachable,
 		lxd.ErrMigrationFailed,
+		lxd.ErrClusterAlreadyBootstrapped,
 	}
 	for i, a := range sentinels {
 		for j, b := range sentinels {
@@ -76,6 +77,7 @@ func TestSentinelErrors_SurviveWrapping(t *testing.T) {
 		lxd.ErrInstanceNotFound,
 		lxd.ErrUnreachable,
 		lxd.ErrMigrationFailed,
+		lxd.ErrClusterAlreadyBootstrapped,
 	} {
 		wrapped := errors.Join(errors.New("outer"), sent)
 		if !errors.Is(wrapped, sent) {
@@ -549,5 +551,278 @@ func TestListInstances_EmptyCluster(t *testing.T) {
 	}
 	if len(instances) != 0 {
 		t.Errorf("ListInstances: want 0 instances, got %d", len(instances))
+	}
+}
+
+// ─── Bootstrap API tests ──────────────────────────────────────────────────────
+
+// TestGetClusterStatus_NotClustered verifies that GetClusterStatus correctly
+// maps a non-clustered response.
+func TestGetClusterStatus_NotClustered(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/1.0/cluster" {
+			http.NotFound(w, r)
+			return
+		}
+		status := map[string]any{
+			"enabled":         false,
+			"server_name":     "",
+			"cluster_address": "",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(lxdSyncResponse(t, status))
+	}))
+	defer srv.Close()
+
+	c, err := lxd.New(srv.URL, lxd.WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	status, err := c.GetClusterStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetClusterStatus: unexpected error: %v", err)
+	}
+	if status.Enabled {
+		t.Error("GetClusterStatus: want Enabled=false for unclustered node")
+	}
+}
+
+// TestGetClusterStatus_Clustered verifies that GetClusterStatus correctly maps
+// a clustered response.
+func TestGetClusterStatus_Clustered(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/1.0/cluster" {
+			http.NotFound(w, r)
+			return
+		}
+		status := map[string]any{
+			"enabled":         true,
+			"server_name":     "lxd1",
+			"cluster_address": "https://10.0.0.1:8443",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(lxdSyncResponse(t, status))
+	}))
+	defer srv.Close()
+
+	c, err := lxd.New(srv.URL, lxd.WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	status, err := c.GetClusterStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetClusterStatus: unexpected error: %v", err)
+	}
+	if !status.Enabled {
+		t.Error("GetClusterStatus: want Enabled=true for clustered node")
+	}
+	if status.ServerName != "lxd1" {
+		t.Errorf("GetClusterStatus: ServerName: want %q, got %q", "lxd1", status.ServerName)
+	}
+	if status.ClusterAddress != "https://10.0.0.1:8443" {
+		t.Errorf("GetClusterStatus: ClusterAddress: want %q, got %q", "https://10.0.0.1:8443", status.ClusterAddress)
+	}
+}
+
+// TestGetClusterCertificate_Success verifies that GetClusterCertificate
+// correctly extracts the certificate from the server info response.
+func TestGetClusterCertificate_Success(t *testing.T) {
+	wantCert := "-----BEGIN CERTIFICATE-----\nMIIBxxx\n-----END CERTIFICATE-----"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/1.0" {
+			http.NotFound(w, r)
+			return
+		}
+		info := map[string]any{
+			"environment": map[string]any{
+				"certificate": wantCert,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(lxdSyncResponse(t, info))
+	}))
+	defer srv.Close()
+
+	c, err := lxd.New(srv.URL, lxd.WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	cert, err := c.GetClusterCertificate(context.Background())
+	if err != nil {
+		t.Fatalf("GetClusterCertificate: unexpected error: %v", err)
+	}
+	if cert != wantCert {
+		t.Errorf("GetClusterCertificate: want %q, got %q", wantCert, cert)
+	}
+}
+
+// TestInitCluster_Success verifies that InitCluster sends the correct PUT body
+// and handles a synchronous success response.
+func TestInitCluster_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/1.0/cluster" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(lxdSyncResponse(t, nil))
+	}))
+	defer srv.Close()
+
+	c, err := lxd.New(srv.URL, lxd.WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	err = c.InitCluster(context.Background(), lxd.ClusterInitConfig{
+		ServerName:    "lxd1",
+		ClusterName:   "test-cluster",
+		ListenAddress: "10.0.0.1:8443",
+		StoragePool:   lxd.StoragePoolConfig{Name: "default", Driver: "dir"},
+		TrustToken:    "s3cr3t",
+	})
+	if err != nil {
+		t.Fatalf("InitCluster: unexpected error: %v", err)
+	}
+}
+
+// TestInitCluster_ValidationErrors verifies that InitCluster rejects configs
+// with missing required fields without making network calls.
+func TestInitCluster_ValidationErrors(t *testing.T) {
+	c, _ := lxd.New("https://192.168.1.1:8443")
+
+	tests := []struct {
+		name string
+		cfg  lxd.ClusterInitConfig
+	}{
+		{
+			name: "empty ServerName",
+			cfg: lxd.ClusterInitConfig{
+				ListenAddress: "10.0.0.1:8443",
+				StoragePool:   lxd.StoragePoolConfig{Name: "default", Driver: "dir"},
+			},
+		},
+		{
+			name: "empty ListenAddress",
+			cfg: lxd.ClusterInitConfig{
+				ServerName:  "lxd1",
+				StoragePool: lxd.StoragePoolConfig{Name: "default", Driver: "dir"},
+			},
+		},
+		{
+			name: "empty StoragePool.Name",
+			cfg: lxd.ClusterInitConfig{
+				ServerName:    "lxd1",
+				ListenAddress: "10.0.0.1:8443",
+				StoragePool:   lxd.StoragePoolConfig{Driver: "dir"},
+			},
+		},
+		{
+			name: "empty StoragePool.Driver",
+			cfg: lxd.ClusterInitConfig{
+				ServerName:    "lxd1",
+				ListenAddress: "10.0.0.1:8443",
+				StoragePool:   lxd.StoragePoolConfig{Name: "default"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := c.InitCluster(context.Background(), tc.cfg)
+			if err == nil {
+				t.Errorf("InitCluster(%q): want error, got nil", tc.name)
+			}
+		})
+	}
+}
+
+// TestJoinCluster_Success verifies that JoinCluster sends the correct PUT body
+// and handles a synchronous success response.
+func TestJoinCluster_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/1.0/cluster" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(lxdSyncResponse(t, nil))
+	}))
+	defer srv.Close()
+
+	c, err := lxd.New(srv.URL, lxd.WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	err = c.JoinCluster(context.Background(), lxd.ClusterJoinConfig{
+		ServerName:         "lxd2",
+		ClusterAddress:     "https://10.0.0.1:8443",
+		ClusterCertificate: "-----BEGIN CERTIFICATE-----\nMIIBxxx\n-----END CERTIFICATE-----",
+		TrustToken:         "s3cr3t",
+	})
+	if err != nil {
+		t.Fatalf("JoinCluster: unexpected error: %v", err)
+	}
+}
+
+// TestJoinCluster_ValidationErrors verifies that JoinCluster rejects configs
+// with missing required fields without making network calls.
+func TestJoinCluster_ValidationErrors(t *testing.T) {
+	c, _ := lxd.New("https://192.168.1.1:8443")
+
+	tests := []struct {
+		name string
+		cfg  lxd.ClusterJoinConfig
+	}{
+		{
+			name: "empty ServerName",
+			cfg: lxd.ClusterJoinConfig{
+				ClusterAddress:     "https://10.0.0.1:8443",
+				ClusterCertificate: "cert",
+				TrustToken:         "tok",
+			},
+		},
+		{
+			name: "empty ClusterAddress",
+			cfg: lxd.ClusterJoinConfig{
+				ServerName:         "lxd2",
+				ClusterCertificate: "cert",
+				TrustToken:         "tok",
+			},
+		},
+		{
+			name: "empty ClusterCertificate",
+			cfg: lxd.ClusterJoinConfig{
+				ServerName:     "lxd2",
+				ClusterAddress: "https://10.0.0.1:8443",
+				TrustToken:     "tok",
+			},
+		},
+		{
+			name: "empty TrustToken",
+			cfg: lxd.ClusterJoinConfig{
+				ServerName:         "lxd2",
+				ClusterAddress:     "https://10.0.0.1:8443",
+				ClusterCertificate: "cert",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := c.JoinCluster(context.Background(), tc.cfg)
+			if err == nil {
+				t.Errorf("JoinCluster(%q): want error, got nil", tc.name)
+			}
+		})
 	}
 }

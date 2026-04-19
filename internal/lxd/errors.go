@@ -23,3 +23,9 @@ var ErrUnreachable = errors.New("lxd: endpoint unreachable")
 // reason reported by LXD. Callers should log the error, mark the migration as
 // failed, and abort scale-in for that node (ADR-007).
 var ErrMigrationFailed = errors.New("lxd: migration failed")
+
+// ErrClusterAlreadyBootstrapped is returned by InitCluster and JoinCluster
+// when the target node is already a member of an LXD cluster. Callers should
+// treat this as a successful no-op; re-running bootstrap against an
+// already-initialised cluster must not return an error to the operator.
+var ErrClusterAlreadyBootstrapped = errors.New("lxd: cluster already bootstrapped")

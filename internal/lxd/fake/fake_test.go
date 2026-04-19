@@ -226,3 +226,179 @@ func TestFake_RemoveInstance(t *testing.T) {
 		t.Errorf("after RemoveInstance: want ErrInstanceNotFound, got %v", err)
 	}
 }
+
+// ─── Bootstrap-related fake tests ─────────────────────────────────────────────
+
+func TestFake_GetClusterStatus_Default(t *testing.T) {
+	f := fake.New()
+	status, err := f.GetClusterStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetClusterStatus: unexpected error: %v", err)
+	}
+	if status.Enabled {
+		t.Error("GetClusterStatus: want Enabled=false for fresh fake")
+	}
+}
+
+func TestFake_GetClusterStatus_AfterSetClustered(t *testing.T) {
+	f := fake.New()
+	f.SetClustered(true)
+
+	status, err := f.GetClusterStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetClusterStatus: unexpected error: %v", err)
+	}
+	if !status.Enabled {
+		t.Error("GetClusterStatus: want Enabled=true after SetClustered(true)")
+	}
+}
+
+func TestFake_GetClusterStatus_AfterSetClusterStatus(t *testing.T) {
+	f := fake.New()
+	f.SetClusterStatus(lxd.ClusterStatus{
+		Enabled:        true,
+		ServerName:     "lxd1",
+		ClusterAddress: "https://10.0.0.1:8443",
+	})
+
+	status, err := f.GetClusterStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetClusterStatus: unexpected error: %v", err)
+	}
+	if !status.Enabled {
+		t.Error("GetClusterStatus: want Enabled=true")
+	}
+	if status.ServerName != "lxd1" {
+		t.Errorf("ServerName: want %q, got %q", "lxd1", status.ServerName)
+	}
+	if status.ClusterAddress != "https://10.0.0.1:8443" {
+		t.Errorf("ClusterAddress: want %q, got %q", "https://10.0.0.1:8443", status.ClusterAddress)
+	}
+}
+
+func TestFake_GetClusterCertificate_NotSeeded(t *testing.T) {
+	f := fake.New()
+	_, err := f.GetClusterCertificate(context.Background())
+	if err == nil {
+		t.Fatal("GetClusterCertificate: want error when no certificate seeded, got nil")
+	}
+}
+
+func TestFake_GetClusterCertificate_Seeded(t *testing.T) {
+	f := fake.New()
+	f.SetClusterCertificate("-----BEGIN CERTIFICATE-----\nMIIBxxx\n-----END CERTIFICATE-----")
+
+	cert, err := f.GetClusterCertificate(context.Background())
+	if err != nil {
+		t.Fatalf("GetClusterCertificate: unexpected error: %v", err)
+	}
+	if cert == "" {
+		t.Error("GetClusterCertificate: want non-empty certificate")
+	}
+}
+
+func TestFake_InitCluster_Success(t *testing.T) {
+	f := fake.New()
+
+	err := f.InitCluster(context.Background(), lxd.ClusterInitConfig{
+		ServerName:  "lxd1",
+		ClusterName: "test-cluster",
+		TrustToken:  "s3cr3t",
+		StoragePool: lxd.StoragePoolConfig{Name: "default", Driver: "dir"},
+	})
+	if err != nil {
+		t.Fatalf("InitCluster: unexpected error: %v", err)
+	}
+
+	if len(f.InitCalls) != 1 {
+		t.Fatalf("InitCalls: want 1, got %d", len(f.InitCalls))
+	}
+	if f.InitCalls[0].ServerName != "lxd1" {
+		t.Errorf("InitCalls[0].ServerName: want %q, got %q", "lxd1", f.InitCalls[0].ServerName)
+	}
+
+	// Node should now report as clustered.
+	status, _ := f.GetClusterStatus(context.Background())
+	if !status.Enabled {
+		t.Error("GetClusterStatus: want Enabled=true after InitCluster")
+	}
+}
+
+func TestFake_InitCluster_AlreadyClustered(t *testing.T) {
+	f := fake.New()
+	f.SetClustered(true)
+
+	err := f.InitCluster(context.Background(), lxd.ClusterInitConfig{ServerName: "lxd1"})
+	if err == nil {
+		t.Fatal("InitCluster: want ErrClusterAlreadyBootstrapped, got nil")
+	}
+	if !errors.Is(err, lxd.ErrClusterAlreadyBootstrapped) {
+		t.Errorf("InitCluster: want errors.Is(err, ErrClusterAlreadyBootstrapped), got %v", err)
+	}
+}
+
+func TestFake_InitCluster_CustomError(t *testing.T) {
+	f := fake.New()
+	f.InitError = errors.New("disk full")
+
+	err := f.InitCluster(context.Background(), lxd.ClusterInitConfig{ServerName: "lxd1"})
+	if err == nil {
+		t.Fatal("InitCluster: want error, got nil")
+	}
+	if !errors.Is(err, f.InitError) {
+		t.Errorf("InitCluster: want custom error, got %v", err)
+	}
+}
+
+func TestFake_JoinCluster_Success(t *testing.T) {
+	f := fake.New()
+
+	err := f.JoinCluster(context.Background(), lxd.ClusterJoinConfig{
+		ServerName:         "lxd2",
+		ClusterAddress:     "https://10.0.0.1:8443",
+		ClusterCertificate: "cert",
+		TrustToken:         "s3cr3t",
+	})
+	if err != nil {
+		t.Fatalf("JoinCluster: unexpected error: %v", err)
+	}
+
+	if len(f.JoinCalls) != 1 {
+		t.Fatalf("JoinCalls: want 1, got %d", len(f.JoinCalls))
+	}
+	if f.JoinCalls[0].ServerName != "lxd2" {
+		t.Errorf("JoinCalls[0].ServerName: want %q, got %q", "lxd2", f.JoinCalls[0].ServerName)
+	}
+
+	// Node should now report as clustered.
+	status, _ := f.GetClusterStatus(context.Background())
+	if !status.Enabled {
+		t.Error("GetClusterStatus: want Enabled=true after JoinCluster")
+	}
+}
+
+func TestFake_JoinCluster_AlreadyClustered(t *testing.T) {
+	f := fake.New()
+	f.SetClustered(true)
+
+	err := f.JoinCluster(context.Background(), lxd.ClusterJoinConfig{ServerName: "lxd2"})
+	if err == nil {
+		t.Fatal("JoinCluster: want ErrClusterAlreadyBootstrapped, got nil")
+	}
+	if !errors.Is(err, lxd.ErrClusterAlreadyBootstrapped) {
+		t.Errorf("JoinCluster: want errors.Is(err, ErrClusterAlreadyBootstrapped), got %v", err)
+	}
+}
+
+func TestFake_JoinCluster_CustomError(t *testing.T) {
+	f := fake.New()
+	f.JoinError = errors.New("network unreachable")
+
+	err := f.JoinCluster(context.Background(), lxd.ClusterJoinConfig{ServerName: "lxd2"})
+	if err == nil {
+		t.Fatal("JoinCluster: want error, got nil")
+	}
+	if !errors.Is(err, f.JoinError) {
+		t.Errorf("JoinCluster: want custom error, got %v", err)
+	}
+}

@@ -61,4 +61,26 @@ type Client interface {
 	// Returns [ErrNodeNotFound] if the target cluster member does not exist.
 	// Returns [ErrMigrationFailed] if the migration operation fails.
 	MoveInstance(ctx context.Context, instanceName, targetNode string) error
+
+	// GetClusterStatus returns the current cluster formation state of the LXD
+	// node. Callers use this to determine whether a node is already part of a
+	// cluster before attempting InitCluster or JoinCluster.
+	GetClusterStatus(ctx context.Context) (*ClusterStatus, error)
+
+	// GetClusterCertificate returns the PEM-encoded TLS certificate of the LXD
+	// server. Joining nodes pass this certificate to JoinCluster so they can
+	// verify the seed's identity during the handshake.
+	GetClusterCertificate(ctx context.Context) (string, error)
+
+	// InitCluster initialises a new LXD cluster on the seed node using the
+	// provided preseed configuration (listen address, trust token, storage
+	// pool). The operation is idempotent: if the node is already clustered it
+	// returns [ErrClusterAlreadyBootstrapped] and the caller must treat that
+	// as a successful no-op.
+	InitCluster(ctx context.Context, cfg ClusterInitConfig) error
+
+	// JoinCluster adds this node to an existing LXD cluster identified by the
+	// seed address and certificate in cfg. The operation is idempotent: if the
+	// node is already clustered it returns [ErrClusterAlreadyBootstrapped].
+	JoinCluster(ctx context.Context, cfg ClusterJoinConfig) error
 }
