@@ -505,42 +505,7 @@ func (c *lxdClient) getJSON(ctx context.Context, path string, out any) error {
 // For asynchronous responses it returns the operation path so the caller can
 // wait on it.
 func (c *lxdClient) postJSON(ctx context.Context, path string, body any) (operationPath string, err error) {
-	b, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("lxd: marshal request body: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+path, bytes.NewReader(b))
-	if err != nil {
-		return "", fmt.Errorf("%w: build request: %s", ErrUnreachable, err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", ErrUnreachable, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("lxd: read response body: %w", err)
-	}
-
-	var envelope apiResponse
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return "", fmt.Errorf("lxd: decode response envelope: %w", err)
-	}
-
-	if err := c.checkAPIError(envelope, resp.StatusCode); err != nil {
-		return "", err
-	}
-
-	if envelope.Type == "async" {
-		return envelope.Operation, nil
-	}
-	return "", nil
+	return c.writeJSON(ctx, http.MethodPost, path, body)
 }
 
 // putJSON performs a PUT request to the given path with a JSON-encoded body.
@@ -548,12 +513,19 @@ func (c *lxdClient) postJSON(ctx context.Context, path string, body any) (operat
 // For asynchronous responses it returns the operation path so the caller can
 // wait on it.
 func (c *lxdClient) putJSON(ctx context.Context, path string, body any) (operationPath string, err error) {
+	return c.writeJSON(ctx, http.MethodPut, path, body)
+}
+
+// writeJSON is the shared implementation for postJSON and putJSON. It marshals
+// body, sends a request with the given HTTP method, and returns the LXD
+// operation path for async responses or an empty string for sync responses.
+func (c *lxdClient) writeJSON(ctx context.Context, method, path string, body any) (operationPath string, err error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("lxd: marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint+path, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, bytes.NewReader(b))
 	if err != nil {
 		return "", fmt.Errorf("%w: build request: %s", ErrUnreachable, err)
 	}
