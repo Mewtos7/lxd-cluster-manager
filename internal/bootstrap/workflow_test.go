@@ -11,6 +11,9 @@ import (
 	"github.com/Mewtos7/lx-container-weaver/internal/lxd/fake"
 )
 
+// testCert is a placeholder PEM certificate reused across test functions.
+const testCert = "-----BEGIN CERTIFICATE-----\nMIIBxxx\n-----END CERTIFICATE-----"
+
 // ─── stub ReadinessChecker ────────────────────────────────────────────────────
 
 // stubCheck is a ReadinessChecker whose behaviour is controlled by the test.
@@ -29,7 +32,7 @@ func (s *stubCheck) Check(_ context.Context) error { return s.err }
 // same node names.
 func newSuccessfulBootstrap() (seed, joiner *fake.Fake, cfg bootstrap.Config) {
 	seed = fake.New()
-	seed.SetClusterCertificate("-----BEGIN CERTIFICATE-----\nMIIBxxx\n-----END CERTIFICATE-----")
+	seed.SetClusterCertificate(testCert)
 	seed.AddNode(lxd.NodeInfo{Name: "lxd1", Status: "Online"})
 	seed.AddNode(lxd.NodeInfo{Name: "lxd2", Status: "Online"})
 
@@ -186,7 +189,7 @@ func TestWorkflow_AllReadinessChecksMustPass(t *testing.T) {
 // bootstrap fails, Result.Ready is false and FailedStep is "bootstrap".
 func TestWorkflow_BootstrapFailure(t *testing.T) {
 	seed := fake.New()
-	seed.SetClusterCertificate("-----BEGIN CERTIFICATE-----\nMIIBxxx\n-----END CERTIFICATE-----")
+	seed.SetClusterCertificate(testCert)
 	seed.InitError = errors.New("disk full")
 
 	joiner := fake.New()
@@ -305,7 +308,6 @@ func TestWorkflow_LXDReadinessCheck_Pass(t *testing.T) {
 // TestWorkflow_LXDReadinessCheck_Fail verifies that LXDReadinessCheck fails
 // when the client returns an error from GetClusterStatus.
 func TestWorkflow_LXDReadinessCheck_Fail(t *testing.T) {
-	f := fake.New()
 	// Simulate an unreachable node by making the cluster status return an error.
 	// The fake does not have a built-in error injection for GetClusterStatus,
 	// so we use a lightweight wrapper to simulate the failure.
@@ -316,7 +318,6 @@ func TestWorkflow_LXDReadinessCheck_Fail(t *testing.T) {
 	if err := check.Check(context.Background()); err == nil {
 		t.Fatal("Check: want error when endpoint is unreachable, got nil")
 	}
-	_ = f // suppress unused variable warning
 }
 
 // alwaysUnreachableClient is a minimal lxd.Client stub that returns
