@@ -172,6 +172,23 @@ func (r *Runtime) StackStateDir(stackName string) string {
 // needed and the cleanup function is a no-op, preserving state between calls.
 // When stateDir is empty, a temporary directory is created and the cleanup
 // function removes it.
+//
+// # Accidental state deletion
+//
+// If the state directory or its parent is deleted at the OS level, the next
+// call to [Runtime.Up] or [Runtime.Destroy] will recreate it automatically
+// via os.MkdirAll. The infrastructure itself (e.g. Hetzner Cloud servers)
+// remains unaffected.
+//
+// However, if the Pulumi state *files* inside the directory are deleted while
+// the corresponding cloud resources still exist, Pulumi treats the stack as
+// empty and will attempt to provision new resources on the next [Runtime.Up]
+// call. This is the standard Pulumi state-loss scenario: the manager is
+// degraded in that it cannot track or destroy the orphaned cloud resources
+// through normal Pulumi operations until state is restored (e.g. via
+// pulumi state import or by re-creating the resource record). No data or
+// currently-running servers are affected; only the management plane loses
+// visibility until state is re-established.
 func (r *Runtime) workspaceDir(stackName string) (string, func(), error) {
 	if r.stateDir != "" {
 		dir := filepath.Join(r.stateDir, stackName)

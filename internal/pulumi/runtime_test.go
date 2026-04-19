@@ -146,4 +146,3 @@ func TestStackStateDir_SubdirOfStateDir(t *testing.T) {
 		t.Errorf("StackStateDir: want %q, got %q", expected, dir)
 	}
 }
-
