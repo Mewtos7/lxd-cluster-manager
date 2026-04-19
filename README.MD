@@ -136,11 +136,52 @@ make dev-up
 
 `dev-reset` removes local PostgreSQL state and `dev-up` recreates it.
 
-## Pulumi Automation Runtime
+## Hetzner Cloud Provider
 
-The manager uses the **Pulumi Automation API** (ADR-005) to provision cloud servers in-process — no separate `pulumi` CLI invocation or shell scripts are involved.
+The manager ships with a first-class **Hetzner Cloud provider adapter** that implements the `HyperscalerProvider` interface (ADR-005).
 
-The runtime operates without a persistent state backend. Each provisioning operation uses a self-managed transient workspace that is cleaned up automatically. Idempotency is achieved through Pulumi's declarative model: the program describes the desired infrastructure state and the provider's API reconciles it without manual drift steps.
+### Server lifecycle operations
+
+| Operation | Transport | Description |
+|-----------|-----------|-------------|
+| `ProvisionServer` | Pulumi Automation API (`pulumi-hcloud`) | Declares the desired server state; Pulumi reconciles idempotently |
+| `DeprovisionServer` | Hetzner Cloud REST API | Deletes the server by its numeric ID |
+| `GetServer` | Hetzner Cloud REST API | Returns current server state mapped to a provider-agnostic struct |
+| `ListServers` | Hetzner Cloud REST API | Returns all servers visible to the configured token |
+
+### Provisioning flow
+
+```
+ProvisionServer(ctx, spec)
+      │
+      ▼
+ validateSpec ──► ErrInvalidSpec (missing fields)
+      │
+      ▼
+ Runtime.Up (Pulumi Automation API)
+      │ creates transient workspace
+      │ runs serverProgram (pulumi-hcloud)
+      │       │
+      │       ▼
+      │  hcloud.NewServer ──► Hetzner Cloud API
+      │       │  (idempotent: no duplicate if server exists)
+      │       ▼
+      │  export "serverID" (Hetzner numeric ID as string)
+      │
+      ▼
+ return serverID ──► caller (orchestrator / bootstrap flow)
+
+DeprovisionServer(ctx, serverID)
+      │
+      ▼
+ ParseInt(serverID) ──► error (invalid format)
+      │
+      ▼
+ client.Server.GetByID ──► nil ──► ErrServerNotFound
+      │
+      ▼
+ client.Server.Delete ──► Hetzner Cloud API
+```
 
 ### Triggering provisioning locally
 
@@ -150,7 +191,14 @@ To verify the provisioning workflow locally with a real Hetzner Cloud account:
 2. Run `make run-manager`.
 3. The manager logs confirm that the Hetzner Cloud provider has been initialised and that the Pulumi runtime is ready.
 
-> **Note:** The full `pulumi-hcloud` provider integration (creating real servers) is implemented in the Hetzner Provider Adapter story. The current stub exports a deterministic server ID without creating cloud resources.
+> **Note:** `ProvisionServer` creates real cloud resources when `HETZNER_API_TOKEN` is set. Use a
+> dedicated Hetzner project or test token to avoid unintended charges.
+
+## Pulumi Automation Runtime
+
+The manager uses the **Pulumi Automation API** (ADR-005) to provision cloud servers in-process — no separate `pulumi` CLI invocation or shell scripts are involved.
+
+The runtime operates without a persistent state backend. Each provisioning operation uses a self-managed transient workspace that is cleaned up automatically. Idempotency is achieved through Pulumi's declarative model: the program describes the desired infrastructure state and the Hetzner Cloud API reconciles it without manual drift steps (duplicate server names are not created).
 
 ## Database Migrations
 
