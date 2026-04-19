@@ -46,7 +46,7 @@ type ServerInfo struct {
 // Pulumi Automation API (ADR-005) so that state tracking and idempotency are
 // handled by Pulumi.
 //
-// Error semantics
+// # Error semantics
 //
 // Implementations must wrap their errors using fmt.Errorf("…: %w", sentinel)
 // so that callers can use errors.Is to distinguish failure kinds:
