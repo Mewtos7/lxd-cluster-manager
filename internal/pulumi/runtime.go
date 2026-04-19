@@ -81,7 +81,7 @@ func (r *Runtime) Up(ctx context.Context, stackName string, program ProgramFunc,
 	if err != nil {
 		return nil, fmt.Errorf("pulumi: failed to create workspace directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stack, err := r.upsertStack(ctx, stackName, program, tmpDir)
 	if err != nil {
@@ -106,7 +106,7 @@ func (r *Runtime) Destroy(ctx context.Context, stackName string, program Program
 	if err != nil {
 		return fmt.Errorf("pulumi: failed to create workspace directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stack, err := r.upsertStack(ctx, stackName, program, tmpDir)
 	if err != nil {
