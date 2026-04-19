@@ -6,7 +6,9 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -244,17 +246,14 @@ func (o *Orchestrator) reconcileCluster(ctx context.Context, cluster *model.Clus
 		}
 	}
 
-	o.scheduleCluster(ctx, cluster, log)
+	scaleOutRequired := o.scheduleCluster(ctx, cluster, log)
 
 	if o.provider == nil {
 		log.Debug("reconcile cluster: no provider configured; skipping scaling steps")
 	} else {
-		if o.bootstrap == nil {
-			log.Warn("reconcile cluster: bootstrap workflow not configured; newly provisioned nodes will not be onboarded")
+		if scaleOutRequired {
+			o.executeScaleOut(ctx, cluster, log)
 		}
-		// TODO: evaluate scaling decisions (ADR-006 high/low-water mark logic)
-		// and invoke o.provider.ProvisionServer / o.bootstrap.Run /
-		// o.provider.DeprovisionServer as needed.
 	}
 
 	log.Debug("reconcile cluster: completed")
@@ -269,25 +268,29 @@ func (o *Orchestrator) reconcileCluster(ctx context.Context, cluster *model.Clus
 // [scheduler.ErrNoCapacity] and the event is logged so that an operator or a
 // future scale-out step can react.
 //
+// scheduleCluster returns true when at least one instance could not be placed
+// due to insufficient capacity, signalling that a scale-out event is required.
+//
 // scheduleCluster is a no-op when the scheduler, node repository, or instance
 // repository is not configured.
-func (o *Orchestrator) scheduleCluster(ctx context.Context, cluster *model.Cluster, log *slog.Logger) {
+func (o *Orchestrator) scheduleCluster(ctx context.Context, cluster *model.Cluster, log *slog.Logger) bool {
 	if o.scheduler == nil || o.nodeRepo == nil || o.instanceRepo == nil {
-		return
+		return false
 	}
 
 	nodes, err := o.nodeRepo.ListNodes(ctx, cluster.ID)
 	if err != nil {
 		log.Error("schedule cluster: failed to list nodes", "error", err)
-		return
+		return false
 	}
 
 	instances, err := o.instanceRepo.ListInstances(ctx, cluster.ID)
 	if err != nil {
 		log.Error("schedule cluster: failed to list instances", "error", err)
-		return
+		return false
 	}
 
+	scaleOutRequired := false
 	for _, inst := range instances {
 		if inst.NodeID != "" {
 			// Instance already placed; nothing to do.
@@ -302,7 +305,8 @@ func (o *Orchestrator) scheduleCluster(ctx context.Context, cluster *model.Clust
 
 		result, schedErr := o.scheduler.Schedule(nodes, instances, req)
 		if errors.Is(schedErr, scheduler.ErrNoCapacity) {
-			log.Warn("schedule cluster: no eligible node for instance; scale-out may be required",
+			scaleOutRequired = true
+			log.Warn("schedule cluster: no eligible node for instance; scale-out required",
 				"instance_id", inst.ID, "instance_name", inst.Name)
 			continue
 		}
@@ -332,5 +336,243 @@ func (o *Orchestrator) scheduleCluster(ctx context.Context, cluster *model.Clust
 				break
 			}
 		}
+	}
+	return scaleOutRequired
+}
+
+// executeScaleOut provisions a new cloud server and bootstraps it as an LXD
+// cluster node when placement demand cannot be satisfied by existing capacity.
+//
+// The sequence follows ADR-006:
+//  1. Guard against duplicate provisioning: if any node for the cluster is
+//     already in the provisioning state the scale-out is skipped until the
+//     previous attempt completes or fails, preventing uncontrolled duplication.
+//  2. Build a [provider.ServerSpec] from the cluster's HyperscalerConfig
+//     (keys: "server_type", "region", "image"). An incomplete config causes an
+//     early exit with a logged error — no cloud resources are touched.
+//  3. Call [provider.HyperscalerProvider.ProvisionServer]. On failure the
+//     error is logged and the method returns without creating any node record,
+//     leaving state unambiguous.
+//  4. Create a node record in the [model.NodeStatusProvisioning] state so that
+//     subsequent reconciliation passes are aware of the in-flight provisioning.
+//     Failure to write the record is logged but does not abort the bootstrap step.
+//  5. If a [NodeBootstrapRunner] is configured, run the bootstrap workflow and
+//     update the node record to [model.NodeStatusOnline] on success or
+//     [model.NodeStatusError] on failure. When no runner is configured, a
+//     warning is logged and the node remains in the provisioning state for a
+//     subsequent pass to handle.
+//
+// executeScaleOut is a no-op when no provider is configured.
+func (o *Orchestrator) executeScaleOut(ctx context.Context, cluster *model.Cluster, log *slog.Logger) {
+	// ── Step 1: anti-duplication guard ──────────────────────────────────────
+
+	if o.nodeRepo != nil {
+		nodes, listErr := o.nodeRepo.ListNodes(ctx, cluster.ID)
+		if listErr != nil {
+			log.Error("scale-out: failed to list nodes for duplicate check", "error", listErr)
+			return
+		}
+		for _, n := range nodes {
+			if n.Status == model.NodeStatusProvisioning {
+				log.Info("scale-out: skipping; a node is already being provisioned",
+					"existing_node_id", n.ID, "existing_node_name", n.Name)
+				return
+			}
+		}
+	}
+
+	// ── Step 2: build server spec ────────────────────────────────────────────
+
+	nodeName, nameErr := generateNodeName(cluster.Name)
+	if nameErr != nil {
+		log.Error("scale-out: failed to generate node name", "error", nameErr)
+		return
+	}
+
+	spec, specErr := serverSpecFromCluster(cluster, nodeName)
+	if specErr != nil {
+		log.Error("scale-out: invalid cluster configuration; cannot provision server",
+			"cluster_id", cluster.ID, "error", specErr)
+		return
+	}
+
+	// ── Step 3: provision the server ─────────────────────────────────────────
+
+	serverID, provErr := o.provider.ProvisionServer(ctx, spec)
+	if provErr != nil {
+		log.Error("scale-out: provisioning failed",
+			"cluster_id", cluster.ID, "server_name", spec.Name, "error", provErr)
+		return
+	}
+	log.Info("scale-out: server provisioned",
+		"cluster_id", cluster.ID, "server_id", serverID, "server_name", spec.Name)
+
+	// ── Step 4: record node in provisioning state ────────────────────────────
+
+	var nodeRecord *model.Node
+	if o.nodeRepo != nil {
+		var createErr error
+		nodeRecord, createErr = o.nodeRepo.CreateNode(ctx, &model.Node{
+			ClusterID:           cluster.ID,
+			Name:                nodeName,
+			HyperscalerServerID: serverID,
+			Status:              model.NodeStatusProvisioning,
+		})
+		if createErr != nil {
+			log.Error("scale-out: failed to record provisioning node",
+				"cluster_id", cluster.ID, "server_id", serverID, "error", createErr)
+			// Non-fatal: the server was provisioned but we could not persist the
+			// record. Log and continue so the bootstrap step is still attempted.
+		}
+	}
+
+	// ── Step 5: bootstrap and update node status ─────────────────────────────
+
+	if o.bootstrap == nil {
+		log.Warn("scale-out: bootstrap workflow not configured; node remains in provisioning state",
+			"cluster_id", cluster.ID, "server_id", serverID, "node_name", nodeName)
+		return
+	}
+
+	bCfg := bootstrapConfigFromCluster(cluster, nodeName)
+	result := o.bootstrap.Run(ctx, nodeName, bCfg)
+
+	if nodeRecord == nil || o.nodeRepo == nil {
+		// No node record to update; just log the bootstrap outcome.
+		if result.Ready {
+			log.Info("scale-out: node bootstrapped and online",
+				"cluster_id", cluster.ID, "node_name", nodeName)
+		} else {
+			log.Error("scale-out: bootstrap failed",
+				"cluster_id", cluster.ID, "node_name", nodeName,
+				"failed_step", result.FailedStep, "error", result.Err)
+		}
+		return
+	}
+
+	updated := *nodeRecord
+	if result.Ready {
+		updated.Status = model.NodeStatusOnline
+		if _, updateErr := o.nodeRepo.UpdateNode(ctx, &updated); updateErr != nil {
+			log.Error("scale-out: failed to update node status to online",
+				"node_id", nodeRecord.ID, "error", updateErr)
+		} else {
+			log.Info("scale-out: node bootstrapped and online",
+				"cluster_id", cluster.ID, "node_id", nodeRecord.ID, "node_name", nodeName)
+		}
+	} else {
+		updated.Status = model.NodeStatusError
+		if _, updateErr := o.nodeRepo.UpdateNode(ctx, &updated); updateErr != nil {
+			log.Error("scale-out: failed to update node status to error",
+				"node_id", nodeRecord.ID, "error", updateErr)
+		}
+		log.Error("scale-out: bootstrap failed; node marked as error",
+			"cluster_id", cluster.ID, "node_id", nodeRecord.ID, "node_name", nodeName,
+			"failed_step", result.FailedStep, "error", result.Err)
+	}
+}
+
+// generateNodeName returns a unique node name derived from the cluster name and
+// a random 4-byte hex suffix (e.g. "prod-cluster-scale-a3f2b1c9").
+func generateNodeName(clusterName string) (string, error) {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate node name: %w", err)
+	}
+	return fmt.Sprintf("%s-scale-%x", clusterName, b), nil
+}
+
+// configStringFromMap extracts a string value from a map[string]any. It
+// returns ("", false) when the map is nil, the key is absent, or the value is
+// not a string.
+func configStringFromMap(m map[string]any, key string) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	v, ok := m[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// serverSpecFromCluster builds a [provider.ServerSpec] from the cluster's
+// HyperscalerConfig map. The following string keys are required:
+//   - "server_type": provider-specific server size (e.g. "cx21")
+//   - "region":      provider-specific datacenter / AZ (e.g. "fsn1")
+//   - "image":       OS image name (e.g. "ubuntu-22.04")
+//
+// Returns an error when any required field is absent or empty.
+func serverSpecFromCluster(cluster *model.Cluster, nodeName string) (provider.ServerSpec, error) {
+	get := func(key string) string {
+		s, _ := configStringFromMap(cluster.HyperscalerConfig, key)
+		return s
+	}
+
+	spec := provider.ServerSpec{
+		Name:       nodeName,
+		ServerType: get("server_type"),
+		Region:     get("region"),
+		Image:      get("image"),
+		ClusterID:  cluster.ID,
+	}
+
+	var missing []string
+	if spec.ServerType == "" {
+		missing = append(missing, "server_type")
+	}
+	if spec.Region == "" {
+		missing = append(missing, "region")
+	}
+	if spec.Image == "" {
+		missing = append(missing, "image")
+	}
+	if len(missing) > 0 {
+		return provider.ServerSpec{}, fmt.Errorf(
+			"cluster hyperscaler_config is missing required scale-out fields: %v", missing)
+	}
+	return spec, nil
+}
+
+// bootstrapConfigFromCluster builds a [bootstrap.Config] from the cluster's
+// ScalingConfig and HyperscalerConfig maps. newNodeName is used as the joiner
+// node name so that the bootstrap workflow targets the newly provisioned server.
+//
+// Keys read from ScalingConfig:
+//   - "bootstrap_trust_token": shared secret for LXD cluster formation
+//   - "storage_driver":        LXD storage backend (e.g. "dir", "zfs")
+//   - "storage_pool":          storage pool name (e.g. "default")
+//   - "seed_node_name":        LXD member name of the existing seed node
+//   - "seed_node_address":     listen address of the seed node (host:port)
+//
+// Keys read from HyperscalerConfig:
+//   - "listen_address": the address the new node will advertise (host:port)
+//
+// Missing keys are left as empty strings; the bootstrap workflow will surface
+// failures if required fields are absent.
+func bootstrapConfigFromCluster(cluster *model.Cluster, newNodeName string) bootstrap.Config {
+	sc := func(key string) string {
+		s, _ := configStringFromMap(cluster.ScalingConfig, key)
+		return s
+	}
+	hc := func(key string) string {
+		s, _ := configStringFromMap(cluster.HyperscalerConfig, key)
+		return s
+	}
+
+	return bootstrap.Config{
+		ClusterName:   cluster.Name,
+		TrustToken:    sc("bootstrap_trust_token"),
+		StorageDriver: sc("storage_driver"),
+		StoragePool:   sc("storage_pool"),
+		SeedNode: bootstrap.NodeConfig{
+			Name:          sc("seed_node_name"),
+			ListenAddress: sc("seed_node_address"),
+		},
+		JoinerNode: bootstrap.NodeConfig{
+			Name:          newNodeName,
+			ListenAddress: hc("listen_address"),
+		},
 	}
 }

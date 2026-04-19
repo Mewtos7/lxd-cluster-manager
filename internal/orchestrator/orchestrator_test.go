@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mewtos7/lx-container-weaver/internal/bootstrap"
 	"github.com/Mewtos7/lx-container-weaver/internal/orchestrator"
 	"github.com/Mewtos7/lx-container-weaver/internal/persistence/memory"
 	"github.com/Mewtos7/lx-container-weaver/internal/persistence/model"
+	"github.com/Mewtos7/lx-container-weaver/internal/provider"
 	"github.com/Mewtos7/lx-container-weaver/internal/scheduler"
 )
 
@@ -435,5 +437,480 @@ func TestReconcile_SchedulerSkippedWhenNotConfigured(t *testing.T) {
 	}
 	if got.NodeID != "" {
 		t.Errorf("instance should not be placed when no scheduler configured, got NodeID %q", got.NodeID)
+	}
+}
+
+// ─── scale-out stubs ──────────────────────────────────────────────────────────
+
+// stubProvider is a test double for provider.HyperscalerProvider. It records
+// calls to ProvisionServer and returns a configurable server ID or error.
+type stubProvider struct {
+	provisionCalls int
+	provisionErr   error
+	provisionedID  string // returned on success; defaults to "test-server-id"
+}
+
+func (p *stubProvider) ProvisionServer(_ context.Context, _ provider.ServerSpec) (string, error) {
+	p.provisionCalls++
+	if p.provisionErr != nil {
+		return "", p.provisionErr
+	}
+	id := p.provisionedID
+	if id == "" {
+		id = "test-server-id"
+	}
+	return id, nil
+}
+func (p *stubProvider) DeprovisionServer(_ context.Context, _ string) error { return nil }
+func (p *stubProvider) GetServer(_ context.Context, _ string) (*provider.ServerInfo, error) {
+	return nil, nil
+}
+func (p *stubProvider) ListServers(_ context.Context) ([]*provider.ServerInfo, error) {
+	return nil, nil
+}
+
+// stubBootstrap is a test double for orchestrator.NodeBootstrapRunner. It
+// records calls to Run and returns a configurable bootstrap.Result.
+type stubBootstrap struct {
+	runCalls int
+	result   bootstrap.Result
+}
+
+func (b *stubBootstrap) Run(_ context.Context, nodeName string, _ bootstrap.Config) bootstrap.Result {
+	b.runCalls++
+	r := b.result
+	r.NodeName = nodeName
+	return r
+}
+
+// hyperscalerConfig returns a HyperscalerConfig map with the minimum fields
+// required by serverSpecFromCluster so that scale-out tests do not need to
+// repeat boilerplate.
+func hyperscalerConfig() map[string]any {
+	return map[string]any{
+		"server_type": "cx21",
+		"region":      "fsn1",
+		"image":       "ubuntu-22.04",
+	}
+}
+
+// ─── scale-out tests ──────────────────────────────────────────────────────────
+
+// TestScaleOut_TriggeredWhenNoCapacity verifies that when the scheduler cannot
+// place an instance (ErrNoCapacity) and a provider is configured, the
+// reconcile pass calls ProvisionServer exactly once and creates a node record
+// in the provisioning state.
+func TestScaleOut_TriggeredWhenNoCapacity(t *testing.T) {
+	clusterStore := memory.NewClusterStore()
+	cluster := seedCluster(t, clusterStore, &model.Cluster{
+		Name:              "cluster-1",
+		HyperscalerConfig: hyperscalerConfig(),
+	})
+
+	nodeStore := memory.NewNodeStore()
+	instanceStore := memory.NewInstanceStore()
+
+	// Seed a fully packed node so the scheduler returns ErrNoCapacity.
+	node := seedNodeInStore(t, nodeStore, &model.Node{
+		ClusterID:   cluster.ID,
+		Name:        "node-1",
+		Status:      model.NodeStatusOnline,
+		CPUCores:    1,
+		MemoryBytes: 1 * schedGiB,
+		DiskBytes:   10 * schedGiB,
+	})
+	seedInstance(t, instanceStore, &model.Instance{
+		ClusterID:   cluster.ID,
+		Name:        "existing",
+		NodeID:      node.ID,
+		CPULimit:    1,
+		MemoryLimit: 1 * schedGiB,
+		DiskLimit:   10 * schedGiB,
+	})
+	seedInstance(t, instanceStore, &model.Instance{
+		ClusterID:   cluster.ID,
+		Name:        "unplaced",
+		CPULimit:    1,
+		MemoryLimit: 512 * 1024 * 1024,
+		DiskLimit:   5 * schedGiB,
+	})
+
+	prov := &stubProvider{}
+	orch := newTestOrch(
+		orchestrator.WithClusterRepository(clusterStore),
+		orchestrator.WithNodeRepository(nodeStore),
+		orchestrator.WithInstanceRepository(instanceStore),
+		orchestrator.WithScheduler(scheduler.New()),
+		orchestrator.WithProvider(prov),
+	)
+
+	orch.ReconcileOnce(context.Background())
+
+	if prov.provisionCalls != 1 {
+		t.Errorf("ProvisionServer: want 1 call, got %d", prov.provisionCalls)
+	}
+
+	// A new node record must appear in the provisioning state.
+	nodes, err := nodeStore.ListNodes(context.Background(), cluster.ID)
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	var provisioningNodes []*model.Node
+	for _, n := range nodes {
+		if n.Status == model.NodeStatusProvisioning {
+			provisioningNodes = append(provisioningNodes, n)
+		}
+	}
+	if len(provisioningNodes) != 1 {
+		t.Errorf("want 1 provisioning node, got %d", len(provisioningNodes))
+	}
+	if len(provisioningNodes) > 0 && provisioningNodes[0].HyperscalerServerID != "test-server-id" {
+		t.Errorf("provisioning node HyperscalerServerID: want %q, got %q",
+			"test-server-id", provisioningNodes[0].HyperscalerServerID)
+	}
+}
+
+// TestScaleOut_AntiDuplication verifies that when a node is already in the
+// provisioning state, a subsequent reconcile pass does not trigger another
+// ProvisionServer call, preventing uncontrolled duplicate provisioning.
+func TestScaleOut_AntiDuplication(t *testing.T) {
+	clusterStore := memory.NewClusterStore()
+	cluster := seedCluster(t, clusterStore, &model.Cluster{
+		Name:              "cluster-1",
+		HyperscalerConfig: hyperscalerConfig(),
+	})
+
+	nodeStore := memory.NewNodeStore()
+	instanceStore := memory.NewInstanceStore()
+
+	// Pre-existing provisioning node — simulates a previous scale-out that
+	// has not completed yet.
+	seedNodeInStore(t, nodeStore, &model.Node{
+		ClusterID: cluster.ID,
+		Name:      "cluster-1-scale-existing",
+		Status:    model.NodeStatusProvisioning,
+	})
+
+	// Unplaced instance that would normally trigger scale-out.
+	seedInstance(t, instanceStore, &model.Instance{
+		ClusterID:   cluster.ID,
+		Name:        "unplaced",
+		CPULimit:    1,
+		MemoryLimit: 512 * 1024 * 1024,
+		DiskLimit:   5 * schedGiB,
+	})
+
+	prov := &stubProvider{}
+	orch := newTestOrch(
+		orchestrator.WithClusterRepository(clusterStore),
+		orchestrator.WithNodeRepository(nodeStore),
+		orchestrator.WithInstanceRepository(instanceStore),
+		orchestrator.WithScheduler(scheduler.New()),
+		orchestrator.WithProvider(prov),
+	)
+
+	orch.ReconcileOnce(context.Background())
+
+	if prov.provisionCalls != 0 {
+		t.Errorf("ProvisionServer: want 0 calls (anti-dup), got %d", prov.provisionCalls)
+	}
+}
+
+// TestScaleOut_BootstrapSuccessUpdatesNodeOnline verifies that a successful
+// bootstrap transitions the newly provisioned node to the online state so that
+// subsequent reconciliation passes can schedule workloads on it.
+func TestScaleOut_BootstrapSuccessUpdatesNodeOnline(t *testing.T) {
+	clusterStore := memory.NewClusterStore()
+	cluster := seedCluster(t, clusterStore, &model.Cluster{
+		Name:              "cluster-1",
+		HyperscalerConfig: hyperscalerConfig(),
+	})
+
+	nodeStore := memory.NewNodeStore()
+	instanceStore := memory.NewInstanceStore()
+
+	// No online nodes → ErrNoCapacity for any instance.
+	seedInstance(t, instanceStore, &model.Instance{
+		ClusterID:   cluster.ID,
+		Name:        "unplaced",
+		CPULimit:    1,
+		MemoryLimit: 512 * 1024 * 1024,
+		DiskLimit:   5 * schedGiB,
+	})
+
+	prov := &stubProvider{}
+	boot := &stubBootstrap{result: bootstrap.Result{Ready: true}}
+
+	orch := newTestOrch(
+		orchestrator.WithClusterRepository(clusterStore),
+		orchestrator.WithNodeRepository(nodeStore),
+		orchestrator.WithInstanceRepository(instanceStore),
+		orchestrator.WithScheduler(scheduler.New()),
+		orchestrator.WithProvider(prov),
+		orchestrator.WithBootstrapWorkflow(boot),
+	)
+
+	orch.ReconcileOnce(context.Background())
+
+	if prov.provisionCalls != 1 {
+		t.Errorf("ProvisionServer: want 1 call, got %d", prov.provisionCalls)
+	}
+	if boot.runCalls != 1 {
+		t.Errorf("bootstrap.Run: want 1 call, got %d", boot.runCalls)
+	}
+
+	nodes, err := nodeStore.ListNodes(context.Background(), cluster.ID)
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("want 1 node, got %d", len(nodes))
+	}
+	if nodes[0].Status != model.NodeStatusOnline {
+		t.Errorf("node status: want %q, got %q", model.NodeStatusOnline, nodes[0].Status)
+	}
+}
+
+// TestScaleOut_BootstrapFailureUpdatesNodeError verifies that when the
+// bootstrap workflow fails, the node record is updated to the error state so
+// that operators can identify and investigate the failed node without leaving
+// the system in ambiguous state.
+func TestScaleOut_BootstrapFailureUpdatesNodeError(t *testing.T) {
+	clusterStore := memory.NewClusterStore()
+	cluster := seedCluster(t, clusterStore, &model.Cluster{
+		Name:              "cluster-1",
+		HyperscalerConfig: hyperscalerConfig(),
+	})
+
+	nodeStore := memory.NewNodeStore()
+	instanceStore := memory.NewInstanceStore()
+
+	seedInstance(t, instanceStore, &model.Instance{
+		ClusterID:   cluster.ID,
+		Name:        "unplaced",
+		CPULimit:    1,
+		MemoryLimit: 512 * 1024 * 1024,
+		DiskLimit:   5 * schedGiB,
+	})
+
+	prov := &stubProvider{}
+	boot := &stubBootstrap{result: bootstrap.Result{
+		Ready:      false,
+		FailedStep: "bootstrap",
+		Err:        errors.New("bootstrap failed"),
+	}}
+
+	orch := newTestOrch(
+		orchestrator.WithClusterRepository(clusterStore),
+		orchestrator.WithNodeRepository(nodeStore),
+		orchestrator.WithInstanceRepository(instanceStore),
+		orchestrator.WithScheduler(scheduler.New()),
+		orchestrator.WithProvider(prov),
+		orchestrator.WithBootstrapWorkflow(boot),
+	)
+
+	orch.ReconcileOnce(context.Background())
+
+	if boot.runCalls != 1 {
+		t.Errorf("bootstrap.Run: want 1 call, got %d", boot.runCalls)
+	}
+
+	nodes, err := nodeStore.ListNodes(context.Background(), cluster.ID)
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("want 1 node, got %d", len(nodes))
+	}
+	if nodes[0].Status != model.NodeStatusError {
+		t.Errorf("node status: want %q, got %q", model.NodeStatusError, nodes[0].Status)
+	}
+}
+
+// TestScaleOut_ProvisioningFailureIsLogged verifies that when ProvisionServer
+// returns an error the reconcile pass completes without panic, no node record
+// is created, and the unplaced instance is left untouched.
+func TestScaleOut_ProvisioningFailureIsLogged(t *testing.T) {
+	clusterStore := memory.NewClusterStore()
+	cluster := seedCluster(t, clusterStore, &model.Cluster{
+		Name:              "cluster-1",
+		HyperscalerConfig: hyperscalerConfig(),
+	})
+
+	nodeStore := memory.NewNodeStore()
+	instanceStore := memory.NewInstanceStore()
+
+	unplaced := seedInstance(t, instanceStore, &model.Instance{
+		ClusterID:   cluster.ID,
+		Name:        "unplaced",
+		CPULimit:    1,
+		MemoryLimit: 512 * 1024 * 1024,
+		DiskLimit:   5 * schedGiB,
+	})
+
+	prov := &stubProvider{provisionErr: errors.New("hetzner: rate limited")}
+	boot := &stubBootstrap{}
+
+	orch := newTestOrch(
+		orchestrator.WithClusterRepository(clusterStore),
+		orchestrator.WithNodeRepository(nodeStore),
+		orchestrator.WithInstanceRepository(instanceStore),
+		orchestrator.WithScheduler(scheduler.New()),
+		orchestrator.WithProvider(prov),
+		orchestrator.WithBootstrapWorkflow(boot),
+	)
+
+	// Must not panic.
+	orch.ReconcileOnce(context.Background())
+
+	if prov.provisionCalls != 1 {
+		t.Errorf("ProvisionServer: want 1 call, got %d", prov.provisionCalls)
+	}
+	if boot.runCalls != 0 {
+		t.Errorf("bootstrap.Run: want 0 calls after provisioning failure, got %d", boot.runCalls)
+	}
+
+	// No node records should be created.
+	nodes, err := nodeStore.ListNodes(context.Background(), cluster.ID)
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("want 0 node records after provisioning failure, got %d", len(nodes))
+	}
+
+	// The unplaced instance must remain unplaced.
+	got, err := instanceStore.GetInstance(context.Background(), unplaced.ID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if got.NodeID != "" {
+		t.Errorf("unplaced instance should remain unplaced, got NodeID %q", got.NodeID)
+	}
+}
+
+// TestScaleOut_NoProviderSkipsScaleOut verifies that when no provider is
+// configured the reconcile pass completes without calling any provisioning
+// operation, even when placement demand cannot be satisfied.
+func TestScaleOut_NoProviderSkipsScaleOut(t *testing.T) {
+	clusterStore := memory.NewClusterStore()
+	cluster := seedCluster(t, clusterStore, &model.Cluster{
+		Name:              "cluster-1",
+		HyperscalerConfig: hyperscalerConfig(),
+	})
+
+	nodeStore := memory.NewNodeStore()
+	instanceStore := memory.NewInstanceStore()
+
+	seedInstance(t, instanceStore, &model.Instance{
+		ClusterID:   cluster.ID,
+		Name:        "unplaced",
+		CPULimit:    1,
+		MemoryLimit: 512 * 1024 * 1024,
+		DiskLimit:   5 * schedGiB,
+	})
+
+	// No WithProvider → scale-out must be skipped.
+	orch := newTestOrch(
+		orchestrator.WithClusterRepository(clusterStore),
+		orchestrator.WithNodeRepository(nodeStore),
+		orchestrator.WithInstanceRepository(instanceStore),
+		orchestrator.WithScheduler(scheduler.New()),
+	)
+
+	// Must not panic.
+	orch.ReconcileOnce(context.Background())
+
+	// No provisioning node should appear.
+	nodes, err := nodeStore.ListNodes(context.Background(), cluster.ID)
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("want 0 node records when no provider configured, got %d", len(nodes))
+	}
+}
+
+// TestScaleOut_RepeatedLoopDoesNotDuplicateProvision verifies that running
+// several reconcile passes with unchanged state (one provisioning node already
+// in flight) does not trigger additional ProvisionServer calls.
+func TestScaleOut_RepeatedLoopDoesNotDuplicateProvision(t *testing.T) {
+	clusterStore := memory.NewClusterStore()
+	cluster := seedCluster(t, clusterStore, &model.Cluster{
+		Name:              "cluster-1",
+		HyperscalerConfig: hyperscalerConfig(),
+	})
+
+	nodeStore := memory.NewNodeStore()
+	instanceStore := memory.NewInstanceStore()
+
+	// Simulate an in-flight provisioning from a previous pass.
+	seedNodeInStore(t, nodeStore, &model.Node{
+		ClusterID: cluster.ID,
+		Name:      "cluster-1-scale-existing",
+		Status:    model.NodeStatusProvisioning,
+	})
+	seedInstance(t, instanceStore, &model.Instance{
+		ClusterID:   cluster.ID,
+		Name:        "unplaced",
+		CPULimit:    1,
+		MemoryLimit: 512 * 1024 * 1024,
+		DiskLimit:   5 * schedGiB,
+	})
+
+	prov := &stubProvider{}
+	orch := newTestOrch(
+		orchestrator.WithClusterRepository(clusterStore),
+		orchestrator.WithNodeRepository(nodeStore),
+		orchestrator.WithInstanceRepository(instanceStore),
+		orchestrator.WithScheduler(scheduler.New()),
+		orchestrator.WithProvider(prov),
+	)
+
+	const passes = 5
+	for i := range passes {
+		orch.ReconcileOnce(context.Background())
+		if prov.provisionCalls != 0 {
+			t.Errorf("pass %d: ProvisionServer called %d times; want 0 (anti-dup)",
+				i+1, prov.provisionCalls)
+		}
+	}
+}
+
+// TestScaleOut_InvalidClusterConfigSkipsProvision verifies that when the
+// cluster's HyperscalerConfig is missing required scale-out fields the
+// reconcile pass logs an error and does not call ProvisionServer.
+func TestScaleOut_InvalidClusterConfigSkipsProvision(t *testing.T) {
+	clusterStore := memory.NewClusterStore()
+	cluster := seedCluster(t, clusterStore, &model.Cluster{
+		Name: "cluster-1",
+		// HyperscalerConfig intentionally empty → missing server_type/region/image.
+	})
+
+	nodeStore := memory.NewNodeStore()
+	instanceStore := memory.NewInstanceStore()
+
+	seedInstance(t, instanceStore, &model.Instance{
+		ClusterID:   cluster.ID,
+		Name:        "unplaced",
+		CPULimit:    1,
+		MemoryLimit: 512 * 1024 * 1024,
+		DiskLimit:   5 * schedGiB,
+	})
+
+	prov := &stubProvider{}
+	orch := newTestOrch(
+		orchestrator.WithClusterRepository(clusterStore),
+		orchestrator.WithNodeRepository(nodeStore),
+		orchestrator.WithInstanceRepository(instanceStore),
+		orchestrator.WithScheduler(scheduler.New()),
+		orchestrator.WithProvider(prov),
+	)
+
+	// Must not panic.
+	orch.ReconcileOnce(context.Background())
+
+	if prov.provisionCalls != 0 {
+		t.Errorf("ProvisionServer: want 0 calls for invalid config, got %d", prov.provisionCalls)
 	}
 }
