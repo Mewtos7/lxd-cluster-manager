@@ -7,7 +7,7 @@
 
 ## Context
 
-The manager is a long-running service responsible for cluster orchestration, API serving, background reconciliation loops, and integration with LXD, PostgreSQL, and the Pulumi Automation API. The language choice affects developer ergonomics, ecosystem fit, runtime performance, operational simplicity, and long-term maintainability.
+The manager is a long-running service responsible for cluster orchestration, API serving, background reconciliation loops, and integration with LXD, PostgreSQL, and hyperscaler REST APIs. The language choice affects developer ergonomics, ecosystem fit, runtime performance, operational simplicity, and long-term maintainability.
 
 ## Decision
 
@@ -18,7 +18,7 @@ The manager is implemented in **Go**.
 | Criterion | Go |
 |-----------|-----|
 | LXD ecosystem | LXD is itself written in Go; the official LXD client library (`github.com/canonical/lxd`) is Go-native |
-| Pulumi Automation API | Official Go SDK (`github.com/pulumi/pulumi/sdk/v3`) — first-class support |
+| Hyperscaler SDKs | Official Go SDKs for major hyperscalers (e.g. `hcloud-go` for Hetzner Cloud) — first-class support |
 | PostgreSQL | Excellent drivers (`pgx`) and migration tools (`golang-migrate`) |
 | Concurrency | Goroutines and channels are a natural fit for per-cluster reconciliation loops running in parallel |
 | Single binary deployment | Go compiles to a self-contained static binary — no runtime dependency, easy to containerise |
@@ -28,10 +28,10 @@ The manager is implemented in **Go**.
 
 ## Alternatives Considered
 
-- **Rust:** Strong performance and memory safety guarantees, but significantly higher development complexity and a smaller ecosystem for LXD/Pulumi integrations. Better suited to systems programming than service orchestration.
+- **Rust:** Strong performance and memory safety guarantees, but significantly higher development complexity and a smaller ecosystem for LXD and hyperscaler SDK integrations. Better suited to systems programming than service orchestration.
 - **Python:** Rapid prototyping and a large library ecosystem, but dynamic typing and the GIL make concurrent reconciliation loops more complex to manage reliably. Less ergonomic for producing a deployable single binary.
 - **Java / Kotlin:** Mature ecosystems, but JVM startup time and memory overhead are unnecessary for this use case. No native LXD client library.
-- **TypeScript / Node.js:** Pulumi's primary language, but no native LXD client and event-loop concurrency is less natural for CPU-adjacent scheduling logic.
+- **TypeScript / Node.js:** No native LXD client; event-loop concurrency is less natural for CPU-adjacent scheduling logic.
 
 ## Consequences
 

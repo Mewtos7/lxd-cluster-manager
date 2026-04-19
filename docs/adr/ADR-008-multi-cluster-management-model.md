@@ -16,7 +16,7 @@ Each LXD cluster is represented as an **isolated management domain** within the 
 - Clusters are registered in the manager's database with their own identity, LXD API endpoint(s), credentials, hyperscaler configuration, and scaling policy.
 - All API resources (nodes, instances, scaling events) are scoped to a cluster by a `cluster_id` foreign key.
 - The reconciliation loop (ADR-006) runs **independently per cluster** — a failure or scaling event in one cluster does not affect others.
-- Each cluster has its own Pulumi stack for hyperscaler provisioning (ADR-005).
+- Each cluster's hyperscaler provisioning is handled through the `HyperscalerProvider` interface (ADR-005), scoped by the cluster's configuration.
 - Cross-cluster operations (e.g. moving a workload between clusters) are not supported in the initial version.
 
 ### API structure
