@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -97,6 +98,14 @@ type apiResources struct {
 // apiDisk represents a single disk in the LXD resources response.
 type apiDisk struct {
 	Size uint64 `json:"size"`
+	// Partitions holds per-partition usage data when available.
+	Partitions []apiPartition `json:"partitions"`
+}
+
+// apiPartition represents a single partition in the LXD resources response.
+type apiPartition struct {
+	Size uint64 `json:"size"`
+	Used uint64 `json:"used"`
 }
 
 // apiOperation maps to the LXD async operation metadata.
@@ -264,7 +273,7 @@ func (c *lxdClient) GetNodeResources(ctx context.Context, nodeName string) (*Nod
 		return nil, fmt.Errorf("lxd: get node resources: nodeName must not be empty")
 	}
 	var res apiResources
-	if err := c.getJSON(ctx, "/1.0/resources?target="+nodeName, &res); err != nil {
+	if err := c.getJSON(ctx, "/1.0/resources?target="+url.QueryEscape(nodeName), &res); err != nil {
 		return nil, fmt.Errorf("lxd: get node resources for %q: %w", nodeName, err)
 	}
 	return resourcesToNodeResources(res), nil
@@ -311,7 +320,7 @@ func (c *lxdClient) MoveInstance(ctx context.Context, instanceName, targetNode s
 		Live:      true,
 		Target:    targetNode,
 	}
-	operationPath, err := c.postJSON(ctx, "/1.0/instances/"+instanceName+"?target="+targetNode, body)
+	operationPath, err := c.postJSON(ctx, "/1.0/instances/"+url.PathEscape(instanceName)+"?target="+url.QueryEscape(targetNode), body)
 	if err != nil {
 		return fmt.Errorf("lxd: move instance %q to %q: %w", instanceName, targetNode, err)
 	}
@@ -479,14 +488,17 @@ func instanceToInfo(i apiInstance) InstanceInfo {
 }
 
 func resourcesToNodeResources(r apiResources) *NodeResources {
-	var diskTotal uint64
+	var diskTotal, diskUsed uint64
 	for _, d := range r.Storage.Disks {
 		diskTotal += d.Size
+		for _, p := range d.Partitions {
+			diskUsed += p.Used
+		}
 	}
 	return &NodeResources{
 		CPU:    CPUResources{Total: r.CPU.Total},
 		Memory: MemoryResources{Total: r.Memory.Total, Used: r.Memory.Used},
-		Disk:   DiskResources{Total: diskTotal},
+		Disk:   DiskResources{Total: diskTotal, Used: diskUsed},
 	}
 }
 

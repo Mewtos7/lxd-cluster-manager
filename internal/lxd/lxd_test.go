@@ -304,7 +304,12 @@ func TestGetNodeResources_Success(t *testing.T) {
 			},
 			"storage": map[string]any{
 				"disks": []map[string]any{
-					{"size": 107374182400},
+					{
+						"size": 107374182400,
+						"partitions": []map[string]any{
+							{"size": 107374182400, "used": 21474836480},
+						},
+					},
 				},
 			},
 		}
@@ -334,6 +339,9 @@ func TestGetNodeResources_Success(t *testing.T) {
 	}
 	if resources.Disk.Total != 107374182400 {
 		t.Errorf("Disk.Total: want 107374182400, got %d", resources.Disk.Total)
+	}
+	if resources.Disk.Used != 21474836480 {
+		t.Errorf("Disk.Used: want 21474836480, got %d", resources.Disk.Used)
 	}
 }
 
