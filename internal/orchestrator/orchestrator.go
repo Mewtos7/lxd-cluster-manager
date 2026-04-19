@@ -473,7 +473,8 @@ func (o *Orchestrator) executeScaleOut(ctx context.Context, cluster *model.Clust
 }
 
 // generateNodeName returns a unique node name derived from the cluster name and
-// a random 4-byte hex suffix (e.g. "prod-cluster-scale-a3f2b1c9").
+// a random 4-byte (8-character hex) suffix
+// (e.g. "prod-cluster-scale-a3f2b1c9").
 func generateNodeName(clusterName string) (string, error) {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
