@@ -45,17 +45,36 @@ type ServerInfo struct {
 // implement. Implementations manage the lifecycle of cloud servers using the
 // Pulumi Automation API (ADR-005) so that state tracking and idempotency are
 // handled by Pulumi.
+//
+// Error semantics
+//
+// Implementations must wrap their errors using fmt.Errorf("…: %w", sentinel)
+// so that callers can use errors.Is to distinguish failure kinds:
+//
+//   - [ErrInvalidSpec] – the supplied ServerSpec is missing required fields.
+//   - [ErrServerNotFound] – the requested server ID does not exist.
+//
+// Any other error indicates a transient or unexpected failure and may be
+// retried by the caller.
 type HyperscalerProvider interface {
 	// ProvisionServer provisions a new cloud server according to spec and
 	// returns the provider-assigned server ID.
+	//
+	// Returns ErrInvalidSpec if the spec is missing required fields.
 	ProvisionServer(ctx context.Context, spec ServerSpec) (serverID string, err error)
 
 	// DeprovisionServer removes the cloud server with the given provider ID.
+	//
+	// Returns ErrServerNotFound if no server with that ID exists.
 	DeprovisionServer(ctx context.Context, serverID string) error
 
-	// GetServer returns the current state of the server with the given provider ID.
+	// GetServer returns the current state of the server with the given
+	// provider ID.
+	//
+	// Returns ErrServerNotFound if no server with that ID exists.
 	GetServer(ctx context.Context, serverID string) (*ServerInfo, error)
 
 	// ListServers returns all servers currently managed by this provider.
+	// An empty slice (not nil) is returned when no servers exist.
 	ListServers(ctx context.Context) ([]*ServerInfo, error)
 }
