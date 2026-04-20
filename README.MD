@@ -126,6 +126,7 @@ All variables are documented in `.env.example`. Do not commit `.env`.
 | `RECONCILE_INTERVAL` | `60s` | How often the orchestration loop runs |
 | `SHUTDOWN_TIMEOUT` | `30s` | Maximum wait for in-flight requests on shutdown |
 | `HETZNER_API_TOKEN` | _(empty — optional)_ | Hetzner Cloud API token; enables Hetzner provider |
+| `INITIAL_BOOTSTRAP_ENABLED` | `false` | When `true`, the manager attempts to bootstrap the first LXD cluster at startup. Skipped automatically when any cluster already exists. |
 
 ## Reset Workflow
 
@@ -188,6 +189,39 @@ To verify the provisioning workflow locally with a real Hetzner Cloud account:
 
 > **Note:** `ProvisionServer` creates real cloud resources when `HETZNER_API_TOKEN` is set. Use a
 > dedicated Hetzner project or test token to avoid unintended charges.
+
+## Initial Cluster Bootstrap
+
+The manager ships with a **bootstrap guard** that controls whether the very first LXD cluster is provisioned automatically at startup (ADR-011).
+
+### How the guard works
+
+```
+Manager startup
+      │
+      ▼
+INITIAL_BOOTSTRAP_ENABLED == false? ──► log "bootstrap disabled" ──► skip
+      │ (true)
+      ▼
+ClusterRepository.ListClusters()
+      │
+      ├── len > 0 ──► log "cluster already exists" ──► skip
+      │
+      └── len == 0 ──► log "invoking bootstrap coordinator" ──► RunBootstrap()
+```
+
+The guard is deterministic and **side-effect free** when the feature flag is disabled. It never mutates state until all conditions are met.
+
+### Enabling bootstrap
+
+Set `INITIAL_BOOTSTRAP_ENABLED=true` in `.env` **only** when all of the following are true:
+
+- No cluster has been registered in the database yet.
+- You want the manager to bootstrap the first two-node LXD cluster automatically on next startup.
+
+Once at least one cluster exists, the bootstrap path is skipped even if the flag remains `true`.
+
+> **Note:** Leave `INITIAL_BOOTSTRAP_ENABLED=false` (the default) for all other environments to keep startup fully side-effect free.
 
 ## Provisioning Model
 
