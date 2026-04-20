@@ -8,8 +8,8 @@ import (
 	"github.com/Mewtos7/lx-container-weaver/internal/bootstrap"
 	"github.com/Mewtos7/lx-container-weaver/internal/persistence/memory"
 	"github.com/Mewtos7/lx-container-weaver/internal/persistence/model"
-	"log/slog"
 	"io"
+	"log/slog"
 )
 
 // discardLogger returns a slog.Logger that silently discards all output.
