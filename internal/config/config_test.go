@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +173,7 @@ func TestLoad_InitialBootstrapEnabled_True(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://host/db")
 	t.Setenv("API_KEYS", "somehash")
 	t.Setenv("INITIAL_BOOTSTRAP_ENABLED", "true")
+	setBootstrapEnv(t)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -186,6 +188,7 @@ func TestLoad_InitialBootstrapEnabled_CaseInsensitive(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://host/db")
 	t.Setenv("API_KEYS", "somehash")
 	t.Setenv("INITIAL_BOOTSTRAP_ENABLED", "TRUE")
+	setBootstrapEnv(t)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -207,5 +210,171 @@ func TestLoad_InitialBootstrapEnabled_False(t *testing.T) {
 	}
 	if cfg.InitialBootstrapEnabled {
 		t.Error("InitialBootstrapEnabled: want false, got true")
+	}
+}
+
+// setBootstrapEnv sets all bootstrap environment variables to valid values for
+// tests that need INITIAL_BOOTSTRAP_ENABLED=true.
+func setBootstrapEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("BOOTSTRAP_CLUSTER_NAME", "test-cluster")
+	t.Setenv("BOOTSTRAP_HETZNER_SERVER_TYPE", "cx22")
+	t.Setenv("BOOTSTRAP_HETZNER_REGION", "nbg1")
+	t.Setenv("BOOTSTRAP_HETZNER_IMAGE", "ubuntu-22.04")
+	t.Setenv("BOOTSTRAP_TRUST_TOKEN", "s3cr3t")
+	t.Setenv("BOOTSTRAP_STORAGE_DRIVER", "dir")
+	t.Setenv("BOOTSTRAP_STORAGE_POOL", "default")
+	t.Setenv("BOOTSTRAP_SEED_NODE_NAME", "lxd1")
+	t.Setenv("BOOTSTRAP_SEED_NODE_ADDRESS", "10.0.0.1:8443")
+	t.Setenv("BOOTSTRAP_JOINER_NODE_NAME", "lxd2")
+	t.Setenv("BOOTSTRAP_JOINER_NODE_ADDRESS", "10.0.0.2:8443")
+}
+
+func TestLoad_Bootstrap_DisabledSkipsValidation(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "somehash")
+	t.Setenv("INITIAL_BOOTSTRAP_ENABLED", "false")
+	// Leave all BOOTSTRAP_* vars unset — validation must not fail.
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error when bootstrap is disabled, got %v", err)
+	}
+	if cfg.Bootstrap.ClusterName != "" {
+		t.Errorf("Bootstrap.ClusterName: want empty, got %q", cfg.Bootstrap.ClusterName)
+	}
+}
+
+func TestLoad_Bootstrap_ValidConfig(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "somehash")
+	t.Setenv("INITIAL_BOOTSTRAP_ENABLED", "true")
+	setBootstrapEnv(t)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error for valid bootstrap config, got %v", err)
+	}
+
+	b := cfg.Bootstrap
+	if b.ClusterName != "test-cluster" {
+		t.Errorf("Bootstrap.ClusterName: want %q, got %q", "test-cluster", b.ClusterName)
+	}
+	if b.HetznerServerType != "cx22" {
+		t.Errorf("Bootstrap.HetznerServerType: want %q, got %q", "cx22", b.HetznerServerType)
+	}
+	if b.HetznerRegion != "nbg1" {
+		t.Errorf("Bootstrap.HetznerRegion: want %q, got %q", "nbg1", b.HetznerRegion)
+	}
+	if b.HetznerImage != "ubuntu-22.04" {
+		t.Errorf("Bootstrap.HetznerImage: want %q, got %q", "ubuntu-22.04", b.HetznerImage)
+	}
+	if b.TrustToken != "s3cr3t" {
+		t.Errorf("Bootstrap.TrustToken: want %q, got %q", "s3cr3t", b.TrustToken)
+	}
+	if b.StorageDriver != "dir" {
+		t.Errorf("Bootstrap.StorageDriver: want %q, got %q", "dir", b.StorageDriver)
+	}
+	if b.StoragePool != "default" {
+		t.Errorf("Bootstrap.StoragePool: want %q, got %q", "default", b.StoragePool)
+	}
+	if b.SeedNodeName != "lxd1" {
+		t.Errorf("Bootstrap.SeedNodeName: want %q, got %q", "lxd1", b.SeedNodeName)
+	}
+	if b.SeedNodeAddress != "10.0.0.1:8443" {
+		t.Errorf("Bootstrap.SeedNodeAddress: want %q, got %q", "10.0.0.1:8443", b.SeedNodeAddress)
+	}
+	if b.JoinerNodeName != "lxd2" {
+		t.Errorf("Bootstrap.JoinerNodeName: want %q, got %q", "lxd2", b.JoinerNodeName)
+	}
+	if b.JoinerNodeAddress != "10.0.0.2:8443" {
+		t.Errorf("Bootstrap.JoinerNodeAddress: want %q, got %q", "10.0.0.2:8443", b.JoinerNodeAddress)
+	}
+}
+
+func TestLoad_Bootstrap_MissingFields(t *testing.T) {
+	baseSetup := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("DATABASE_URL", "postgres://host/db")
+		t.Setenv("API_KEYS", "somehash")
+		t.Setenv("INITIAL_BOOTSTRAP_ENABLED", "true")
+		setBootstrapEnv(t)
+	}
+
+	tests := []struct {
+		name    string
+		unset   string
+		wantErr string
+	}{
+		{
+			name:    "missing BOOTSTRAP_CLUSTER_NAME",
+			unset:   "BOOTSTRAP_CLUSTER_NAME",
+			wantErr: "BOOTSTRAP_CLUSTER_NAME is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_HETZNER_SERVER_TYPE",
+			unset:   "BOOTSTRAP_HETZNER_SERVER_TYPE",
+			wantErr: "BOOTSTRAP_HETZNER_SERVER_TYPE is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_HETZNER_REGION",
+			unset:   "BOOTSTRAP_HETZNER_REGION",
+			wantErr: "BOOTSTRAP_HETZNER_REGION is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_HETZNER_IMAGE",
+			unset:   "BOOTSTRAP_HETZNER_IMAGE",
+			wantErr: "BOOTSTRAP_HETZNER_IMAGE is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_TRUST_TOKEN",
+			unset:   "BOOTSTRAP_TRUST_TOKEN",
+			wantErr: "BOOTSTRAP_TRUST_TOKEN is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_STORAGE_DRIVER",
+			unset:   "BOOTSTRAP_STORAGE_DRIVER",
+			wantErr: "BOOTSTRAP_STORAGE_DRIVER is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_STORAGE_POOL",
+			unset:   "BOOTSTRAP_STORAGE_POOL",
+			wantErr: "BOOTSTRAP_STORAGE_POOL is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_SEED_NODE_NAME",
+			unset:   "BOOTSTRAP_SEED_NODE_NAME",
+			wantErr: "BOOTSTRAP_SEED_NODE_NAME is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_SEED_NODE_ADDRESS",
+			unset:   "BOOTSTRAP_SEED_NODE_ADDRESS",
+			wantErr: "BOOTSTRAP_SEED_NODE_ADDRESS is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_JOINER_NODE_NAME",
+			unset:   "BOOTSTRAP_JOINER_NODE_NAME",
+			wantErr: "BOOTSTRAP_JOINER_NODE_NAME is required",
+		},
+		{
+			name:    "missing BOOTSTRAP_JOINER_NODE_ADDRESS",
+			unset:   "BOOTSTRAP_JOINER_NODE_ADDRESS",
+			wantErr: "BOOTSTRAP_JOINER_NODE_ADDRESS is required",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			baseSetup(t)
+			t.Setenv(tc.unset, "")
+
+			_, err := config.Load()
+			if err == nil {
+				t.Fatalf("expected error when %s is missing, got nil", tc.unset)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
 	}
 }

@@ -127,6 +127,17 @@ All variables are documented in `.env.example`. Do not commit `.env`.
 | `SHUTDOWN_TIMEOUT` | `30s` | Maximum wait for in-flight requests on shutdown |
 | `HETZNER_API_TOKEN` | _(empty — optional)_ | Hetzner Cloud API token; enables Hetzner provider |
 | `INITIAL_BOOTSTRAP_ENABLED` | `false` | When `true`, the manager attempts to bootstrap the first LXD cluster at startup. Skipped automatically when any cluster already exists. |
+| `BOOTSTRAP_CLUSTER_NAME` | _(empty — required when bootstrap enabled)_ | Human-readable name for the bootstrapped LXD cluster |
+| `BOOTSTRAP_HETZNER_SERVER_TYPE` | _(empty — required when bootstrap enabled)_ | Hetzner Cloud server type (e.g. `cx22`) |
+| `BOOTSTRAP_HETZNER_REGION` | _(empty — required when bootstrap enabled)_ | Hetzner Cloud datacenter region (e.g. `nbg1`) |
+| `BOOTSTRAP_HETZNER_IMAGE` | _(empty — required when bootstrap enabled)_ | Hetzner Cloud OS image (e.g. `ubuntu-22.04`) |
+| `BOOTSTRAP_TRUST_TOKEN` | _(empty — required when bootstrap enabled)_ | Shared secret authorising LXD cluster member joins |
+| `BOOTSTRAP_STORAGE_DRIVER` | _(empty — required when bootstrap enabled)_ | LXD storage backend driver (e.g. `dir`, `zfs`) |
+| `BOOTSTRAP_STORAGE_POOL` | _(empty — required when bootstrap enabled)_ | LXD storage pool name (e.g. `default`) |
+| `BOOTSTRAP_SEED_NODE_NAME` | _(empty — required when bootstrap enabled)_ | LXD member name for the seed node (e.g. `lxd1`) |
+| `BOOTSTRAP_SEED_NODE_ADDRESS` | _(empty — required when bootstrap enabled)_ | Seed node listen address `host:port` (e.g. `10.0.0.1:8443`) |
+| `BOOTSTRAP_JOINER_NODE_NAME` | _(empty — required when bootstrap enabled)_ | LXD member name for the joiner node (e.g. `lxd2`) |
+| `BOOTSTRAP_JOINER_NODE_ADDRESS` | _(empty — required when bootstrap enabled)_ | Joiner node listen address `host:port` (e.g. `10.0.0.2:8443`) |
 
 ## Reset Workflow
 
