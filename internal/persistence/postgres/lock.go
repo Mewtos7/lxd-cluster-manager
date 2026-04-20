@@ -15,6 +15,11 @@ var _ persistence.BootstrapLocker = (*AdvisoryLock)(nil)
 // BootstrapAdvisoryLockKey is the well-known PostgreSQL advisory lock key used
 // to coordinate initial cluster bootstrap across manager instances. All
 // instances must use the same key to contend on the same lock.
+//
+// The value is derived from the FNV-1a 64-bit hash of the string
+// "lx-container-weaver:bootstrap", providing a collision-resistant constant
+// that is unlikely to clash with advisory locks used by other applications
+// sharing the same database.
 const BootstrapAdvisoryLockKey int64 = 7887792386627534949
 
 // AdvisoryLock implements persistence.BootstrapLocker using a PostgreSQL
