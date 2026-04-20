@@ -73,7 +73,7 @@ type ServerTier string
 const (
 	// ServerTierLow is a small server suitable for light workloads.
 	ServerTierLow ServerTier = "low"
-	// ServerTierMid is a mid-range server for typical production workloads.
+	// ServerTierMid is a medium-range server for typical production workloads.
 	ServerTierMid ServerTier = "mid"
 	// ServerTierHigh is a large server for resource-intensive workloads.
 	ServerTierHigh ServerTier = "high"
