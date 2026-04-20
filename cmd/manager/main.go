@@ -84,7 +84,8 @@ func main() {
 	// entering the reconciliation loop. This is deterministic and side-effect
 	// free when INITIAL_BOOTSTRAP_ENABLED is false (the default).
 	// -------------------------------------------------------------------------
-	bootstrapGuard := bootstrap.NewGuard(clusterRepo, logger)
+	bootstrapLock := postgres.NewAdvisoryLock(pool, postgres.BootstrapAdvisoryLockKey)
+	bootstrapGuard := bootstrap.NewGuard(clusterRepo, logger, bootstrap.WithLocker(bootstrapLock))
 	noopCoordinator := bootstrap.BootstrapCoordinatorFunc(func(_ context.Context) error {
 		logger.Info("initial bootstrap coordinator invoked (no-op: configure a coordinator to enable provisioning)")
 		return nil

@@ -50,6 +50,23 @@ type NodeRepository interface {
 	DeleteNode(ctx context.Context, id string) error
 }
 
+// BootstrapLocker is a distributed lock that prevents multiple manager
+// instances from running the bootstrap coordinator simultaneously.
+//
+// A single Guard instance uses TryLock and Unlock from one goroutine only;
+// implementations do not need to support concurrent callers sharing one
+// BootstrapLocker instance.
+type BootstrapLocker interface {
+	// TryLock attempts to acquire the distributed lock without blocking.
+	// It returns (true, nil) when the lock is acquired, (false, nil) when
+	// another holder already owns the lock, and (false, err) on I/O failures.
+	TryLock(ctx context.Context) (bool, error)
+
+	// Unlock releases a previously acquired lock. It is a no-op when the lock
+	// is not held by this instance.
+	Unlock(ctx context.Context) error
+}
+
 // InstanceRepository defines the data access operations for container/VM
 // instances within a cluster.
 type InstanceRepository interface {
