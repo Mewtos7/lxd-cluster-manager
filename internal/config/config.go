@@ -58,70 +58,53 @@ type Config struct {
 	// Environment variable: INITIAL_BOOTSTRAP_ENABLED (default: false)
 	InitialBootstrapEnabled bool
 
-	// Bootstrap holds the settings required to provision and bootstrap the
-	// very first LXD cluster. These fields are only loaded and validated
-	// when InitialBootstrapEnabled is true.
+	// Bootstrap holds the operator-supplied settings that drive the very
+	// first LXD cluster provisioning. These fields are only loaded and
+	// validated when InitialBootstrapEnabled is true. All other bootstrap
+	// details (cluster name, trust token, storage config, node names and
+	// addresses) are either auto-generated or use hardcoded defaults.
 	Bootstrap BootstrapConfig
 }
 
-// BootstrapConfig holds the settings required to provision and bootstrap the
-// very first LXD cluster. All fields are required when
-// InitialBootstrapEnabled is true; they have no effect when bootstrap is
-// disabled.
+// ServerTier is the abstracted server size used for bootstrap node provisioning.
+// It is translated to hyperscaler-specific instance types at provisioning time.
+type ServerTier string
+
+const (
+	// ServerTierLow is a small server suitable for light workloads.
+	ServerTierLow ServerTier = "low"
+	// ServerTierMid is a mid-range server for typical production workloads.
+	ServerTierMid ServerTier = "mid"
+	// ServerTierHigh is a large server for resource-intensive workloads.
+	ServerTierHigh ServerTier = "high"
+)
+
+// BootstrapConfig holds the minimal operator-supplied settings required to
+// provision and bootstrap the first LXD cluster. Hyperscaler-specific
+// details (server type, OS image, storage driver/pool, node names and
+// addresses, trust token) are resolved from these three inputs or fall back
+// to hardcoded defaults, so operators do not need to know provider internals.
+//
+// All three fields are required when InitialBootstrapEnabled is true; they
+// have no effect when bootstrap is disabled.
 type BootstrapConfig struct {
-	// ClusterName is the human-readable name assigned to the bootstrapped cluster.
-	// Environment variable: BOOTSTRAP_CLUSTER_NAME (required when bootstrap enabled)
-	ClusterName string
+	// Hyperscaler identifies the cloud provider used to provision bootstrap
+	// nodes (e.g. "hetzner"). The value is matched case-insensitively and
+	// translated to the corresponding provider implementation.
+	// Environment variable: BOOTSTRAP_HYPERSCALER (required when bootstrap enabled)
+	Hyperscaler string
 
-	// HetznerServerType is the Hetzner Cloud server type to provision for
-	// each node (e.g. "cx22", "cx32").
-	// Environment variable: BOOTSTRAP_HETZNER_SERVER_TYPE (required when bootstrap enabled)
-	HetznerServerType string
+	// Region is a provider-agnostic datacenter region identifier
+	// (e.g. "eu-central", "us-east"). It is mapped to the hyperscaler's
+	// native region code at provisioning time.
+	// Environment variable: BOOTSTRAP_REGION (required when bootstrap enabled)
+	Region string
 
-	// HetznerRegion is the Hetzner Cloud datacenter location for the
-	// provisioned servers (e.g. "nbg1", "hel1", "fsn1").
-	// Environment variable: BOOTSTRAP_HETZNER_REGION (required when bootstrap enabled)
-	HetznerRegion string
-
-	// HetznerImage is the Hetzner Cloud OS image used when creating servers
-	// (e.g. "ubuntu-22.04").
-	// Environment variable: BOOTSTRAP_HETZNER_IMAGE (required when bootstrap enabled)
-	HetznerImage string
-
-	// TrustToken is the shared secret that authorizes LXD cluster member
-	// joins. It must be the same value on all nodes.
-	// Environment variable: BOOTSTRAP_TRUST_TOKEN (required when bootstrap enabled)
-	TrustToken string
-
-	// StorageDriver is the LXD storage backend driver
-	// (e.g. "dir", "zfs", "btrfs").
-	// Environment variable: BOOTSTRAP_STORAGE_DRIVER (required when bootstrap enabled)
-	StorageDriver string
-
-	// StoragePool is the name of the LXD storage pool to configure on each
-	// node (e.g. "default").
-	// Environment variable: BOOTSTRAP_STORAGE_POOL (required when bootstrap enabled)
-	StoragePool string
-
-	// SeedNodeName is the LXD cluster member name assigned to the seed
-	// (first) node (e.g. "lxd1"). Must be unique within the cluster.
-	// Environment variable: BOOTSTRAP_SEED_NODE_NAME (required when bootstrap enabled)
-	SeedNodeName string
-
-	// SeedNodeAddress is the host:port address on which the seed node
-	// listens for cluster member connections (e.g. "10.0.0.1:8443").
-	// Environment variable: BOOTSTRAP_SEED_NODE_ADDRESS (required when bootstrap enabled)
-	SeedNodeAddress string
-
-	// JoinerNodeName is the LXD cluster member name assigned to the joiner
-	// (second) node (e.g. "lxd2"). Must be unique within the cluster.
-	// Environment variable: BOOTSTRAP_JOINER_NODE_NAME (required when bootstrap enabled)
-	JoinerNodeName string
-
-	// JoinerNodeAddress is the host:port address on which the joiner node
-	// listens for cluster member connections (e.g. "10.0.0.2:8443").
-	// Environment variable: BOOTSTRAP_JOINER_NODE_ADDRESS (required when bootstrap enabled)
-	JoinerNodeAddress string
+	// ServerTier is the abstracted node size: "low", "mid", or "high".
+	// The manager translates this to the hyperscaler's native instance type,
+	// so operators do not need to know provider-specific SKU names.
+	// Environment variable: BOOTSTRAP_SERVER_TIER (required when bootstrap enabled)
+	ServerTier ServerTier
 }
 
 // Load reads configuration from environment variables, applies defaults for
@@ -137,17 +120,9 @@ func Load() (*Config, error) {
 		HetznerAPIToken:         os.Getenv("HETZNER_API_TOKEN"),
 		InitialBootstrapEnabled: strings.EqualFold(os.Getenv("INITIAL_BOOTSTRAP_ENABLED"), "true"),
 		Bootstrap: BootstrapConfig{
-			ClusterName:       os.Getenv("BOOTSTRAP_CLUSTER_NAME"),
-			HetznerServerType: os.Getenv("BOOTSTRAP_HETZNER_SERVER_TYPE"),
-			HetznerRegion:     os.Getenv("BOOTSTRAP_HETZNER_REGION"),
-			HetznerImage:      os.Getenv("BOOTSTRAP_HETZNER_IMAGE"),
-			TrustToken:        os.Getenv("BOOTSTRAP_TRUST_TOKEN"),
-			StorageDriver:     os.Getenv("BOOTSTRAP_STORAGE_DRIVER"),
-			StoragePool:       os.Getenv("BOOTSTRAP_STORAGE_POOL"),
-			SeedNodeName:      os.Getenv("BOOTSTRAP_SEED_NODE_NAME"),
-			SeedNodeAddress:   os.Getenv("BOOTSTRAP_SEED_NODE_ADDRESS"),
-			JoinerNodeName:    os.Getenv("BOOTSTRAP_JOINER_NODE_NAME"),
-			JoinerNodeAddress: os.Getenv("BOOTSTRAP_JOINER_NODE_ADDRESS"),
+			Hyperscaler: os.Getenv("BOOTSTRAP_HYPERSCALER"),
+			Region:      os.Getenv("BOOTSTRAP_REGION"),
+			ServerTier:  ServerTier(os.Getenv("BOOTSTRAP_SERVER_TIER")),
 		},
 	}
 
@@ -205,38 +180,21 @@ func (c *Config) validateBootstrap() error {
 	b := &c.Bootstrap
 	var errs []error
 
-	if b.ClusterName == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_CLUSTER_NAME is required when INITIAL_BOOTSTRAP_ENABLED is true"))
+	if b.Hyperscaler == "" {
+		errs = append(errs, errors.New("BOOTSTRAP_HYPERSCALER is required when INITIAL_BOOTSTRAP_ENABLED is true"))
 	}
-	if b.HetznerServerType == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_HETZNER_SERVER_TYPE is required when INITIAL_BOOTSTRAP_ENABLED is true"))
+
+	if b.Region == "" {
+		errs = append(errs, errors.New("BOOTSTRAP_REGION is required when INITIAL_BOOTSTRAP_ENABLED is true"))
 	}
-	if b.HetznerRegion == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_HETZNER_REGION is required when INITIAL_BOOTSTRAP_ENABLED is true"))
-	}
-	if b.HetznerImage == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_HETZNER_IMAGE is required when INITIAL_BOOTSTRAP_ENABLED is true"))
-	}
-	if b.TrustToken == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_TRUST_TOKEN is required when INITIAL_BOOTSTRAP_ENABLED is true"))
-	}
-	if b.StorageDriver == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_STORAGE_DRIVER is required when INITIAL_BOOTSTRAP_ENABLED is true"))
-	}
-	if b.StoragePool == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_STORAGE_POOL is required when INITIAL_BOOTSTRAP_ENABLED is true"))
-	}
-	if b.SeedNodeName == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_SEED_NODE_NAME is required when INITIAL_BOOTSTRAP_ENABLED is true"))
-	}
-	if b.SeedNodeAddress == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_SEED_NODE_ADDRESS is required when INITIAL_BOOTSTRAP_ENABLED is true"))
-	}
-	if b.JoinerNodeName == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_JOINER_NODE_NAME is required when INITIAL_BOOTSTRAP_ENABLED is true"))
-	}
-	if b.JoinerNodeAddress == "" {
-		errs = append(errs, errors.New("BOOTSTRAP_JOINER_NODE_ADDRESS is required when INITIAL_BOOTSTRAP_ENABLED is true"))
+
+	switch b.ServerTier {
+	case ServerTierLow, ServerTierMid, ServerTierHigh:
+		// valid
+	case "":
+		errs = append(errs, errors.New("BOOTSTRAP_SERVER_TIER is required when INITIAL_BOOTSTRAP_ENABLED is true"))
+	default:
+		errs = append(errs, fmt.Errorf("BOOTSTRAP_SERVER_TIER must be one of low|mid|high, got %q", b.ServerTier))
 	}
 
 	return errors.Join(errs...)
