@@ -152,3 +152,60 @@ func TestLoad_HetznerAPITokenSet(t *testing.T) {
 		t.Errorf("HetznerAPIToken: want tok-test-abc, got %q", cfg.HetznerAPIToken)
 	}
 }
+
+func TestLoad_InitialBootstrapEnabled_Default(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "somehash")
+	// Leave INITIAL_BOOTSTRAP_ENABLED unset so the default (false) applies.
+	t.Setenv("INITIAL_BOOTSTRAP_ENABLED", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cfg.InitialBootstrapEnabled {
+		t.Error("InitialBootstrapEnabled: want false by default, got true")
+	}
+}
+
+func TestLoad_InitialBootstrapEnabled_True(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "somehash")
+	t.Setenv("INITIAL_BOOTSTRAP_ENABLED", "true")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !cfg.InitialBootstrapEnabled {
+		t.Error("InitialBootstrapEnabled: want true, got false")
+	}
+}
+
+func TestLoad_InitialBootstrapEnabled_CaseInsensitive(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "somehash")
+	t.Setenv("INITIAL_BOOTSTRAP_ENABLED", "TRUE")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !cfg.InitialBootstrapEnabled {
+		t.Error("InitialBootstrapEnabled: want true for 'TRUE', got false")
+	}
+}
+
+func TestLoad_InitialBootstrapEnabled_False(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://host/db")
+	t.Setenv("API_KEYS", "somehash")
+	t.Setenv("INITIAL_BOOTSTRAP_ENABLED", "false")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cfg.InitialBootstrapEnabled {
+		t.Error("InitialBootstrapEnabled: want false, got true")
+	}
+}

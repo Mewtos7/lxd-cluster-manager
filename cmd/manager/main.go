@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/Mewtos7/lx-container-weaver/internal/api"
+	"github.com/Mewtos7/lx-container-weaver/internal/bootstrap"
 	"github.com/Mewtos7/lx-container-weaver/internal/config"
 	"github.com/Mewtos7/lx-container-weaver/internal/orchestrator"
 	"github.com/Mewtos7/lx-container-weaver/internal/persistence/postgres"
@@ -77,6 +78,22 @@ func main() {
 	// cancelled.
 	// -------------------------------------------------------------------------
 	clusterRepo := postgres.NewClusterRepo(pool)
+
+	// -------------------------------------------------------------------------
+	// Initial bootstrap gate: check the feature flag and cluster state before
+	// entering the reconciliation loop. This is deterministic and side-effect
+	// free when INITIAL_BOOTSTRAP_ENABLED is false (the default).
+	// -------------------------------------------------------------------------
+	bootstrapGuard := bootstrap.NewGuard(clusterRepo, logger)
+	noopCoordinator := bootstrap.BootstrapCoordinatorFunc(func(_ context.Context) error {
+		logger.Info("initial bootstrap coordinator invoked (no-op: configure a coordinator to enable provisioning)")
+		return nil
+	})
+	if err := bootstrapGuard.Run(ctx, cfg.InitialBootstrapEnabled, noopCoordinator); err != nil {
+		logger.Error("initial bootstrap guard failed", "error", err)
+		os.Exit(1)
+	}
+
 	orchOpts := buildOrchOpts(cfg, logger)
 	orchOpts = append(orchOpts, orchestrator.WithClusterRepository(clusterRepo))
 	orch := orchestrator.New(cfg.ReconcileInterval, logger, orchOpts...)

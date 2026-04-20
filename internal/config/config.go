@@ -49,19 +49,28 @@ type Config struct {
 	// cloud provider.
 	// Environment variable: HETZNER_API_TOKEN (optional)
 	HetznerAPIToken string
+
+	// InitialBootstrapEnabled controls whether the manager attempts to
+	// bootstrap the very first LXD cluster at startup. When false (the
+	// default) the bootstrap path is never entered, making startup
+	// side-effect free. Set to true only in environments where no cluster
+	// exists yet and an automated first-cluster provisioning is desired.
+	// Environment variable: INITIAL_BOOTSTRAP_ENABLED (default: false)
+	InitialBootstrapEnabled bool
 }
 
 // Load reads configuration from environment variables, applies defaults for
 // optional settings, and validates that required values are present.
 func Load() (*Config, error) {
 	cfg := &Config{
-		HTTPAddr:          envOr("HTTP_ADDR", ":8080"),
-		DatabaseURL:       os.Getenv("DATABASE_URL"),
-		LogLevel:          envOr("LOG_LEVEL", "info"),
-		ReconcileInterval: mustParseDuration(envOr("RECONCILE_INTERVAL", "60s")),
-		ShutdownTimeout:   mustParseDuration(envOr("SHUTDOWN_TIMEOUT", "30s")),
-		APIKeys:           splitNonEmpty(os.Getenv("API_KEYS"), ","),
-		HetznerAPIToken:   os.Getenv("HETZNER_API_TOKEN"),
+		HTTPAddr:                envOr("HTTP_ADDR", ":8080"),
+		DatabaseURL:             os.Getenv("DATABASE_URL"),
+		LogLevel:                envOr("LOG_LEVEL", "info"),
+		ReconcileInterval:       mustParseDuration(envOr("RECONCILE_INTERVAL", "60s")),
+		ShutdownTimeout:         mustParseDuration(envOr("SHUTDOWN_TIMEOUT", "30s")),
+		APIKeys:                 splitNonEmpty(os.Getenv("API_KEYS"), ","),
+		HetznerAPIToken:         os.Getenv("HETZNER_API_TOKEN"),
+		InitialBootstrapEnabled: strings.EqualFold(os.Getenv("INITIAL_BOOTSTRAP_ENABLED"), "true"),
 	}
 
 	if err := cfg.validate(); err != nil {
